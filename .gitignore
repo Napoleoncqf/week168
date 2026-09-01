@@ -1,0 +1,38 @@
+# Android/manual build outputs
+build/
+dist/
+release/
+*.apk
+*.aab
+*.idsig
+local.properties
+.gradle/
+.kotlin/
+android/keystore/
+android/test-compiled.zip
+
+# Signing material and local secrets
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+
+# User data and local test/preview artifacts
+backups/
+exports/
+*.backup.json
+*.recovery.json
+test-results/
+screenshots/
+*.log
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
