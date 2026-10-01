@@ -12,12 +12,12 @@
 
 | 入口 | 下载 |
 | --- | --- |
-| 最新版 | **[v1.1.6 下载 APK](https://isotopebase.com/week168/downloads/168-hours-v1.1.6.apk)** |
+| 最新版 | **[v1.1.7 下载 APK](https://isotopebase.com/week168/downloads/168-hours-v1.1.7.apk)** |
 | 最早版 | [v1.0.2 下载 APK](https://isotopebase.com/week168/downloads/168-hours-v1.0.2.apk) |
 | 历史版本 | [查看全部历史版本与说明](https://isotopebase.com/week168/history.html) |
 | 官网说明 | [下载说明与校验信息](https://isotopebase.com/week168/#downloads) |
 
-个人版 v1.1.6 更新：简洁首页与待补时间点选；软键盘弹出时仍可使用底部保存按钮，并适配系统主题；默认使用 DeepSeek 快速文字补记；可保存多个 API 配置、测试连接和选择模型；整天空白时分两段预填时间。
+个人版 v1.1.7 更新：文字补记成为首页主操作；先选日期、写正文，模型和深度模式收在可展开的识别设置中；API 配置默认显示摘要，点击“管理”再编辑或测试。继续支持 DeepSeek 快速识别、多组 API 配置、模型选择与手动补记。
 
 ## 通用版 Week168 截图
 
