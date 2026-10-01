@@ -36,3 +36,6 @@ screenshots/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# PWA build output
+dist-web/

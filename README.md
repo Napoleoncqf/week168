@@ -38,6 +38,24 @@
 - 通过 JSON 文件手动备份与恢复
 - 全程离线，无账号、无广告、无网络权限
 
+## 网页版（PWA）
+
+通用版的界面本身是一套离线网页，也可以直接在浏览器里使用，并“添加到主屏幕”作为 App 安装（Android Chrome、iOS Safari、桌面 Chrome/Edge 均可）。
+
+- 在线地址：<https://napoleoncqf.github.io/week168/>（启用 GitHub Pages 后可用）
+- 首次打开后会缓存全部文件，之后断网也能使用
+- 记录只保存在当前浏览器的本地存储里，和 Android 版数据互不相通；可通过“设置 → 备份与恢复”导出、导入 JSON 来迁移
+- 网页版没有每日提醒
+
+本地构建：
+
+```bash
+node scripts/build-web.mjs        # 输出到 dist-web/
+cd dist-web && python3 -m http.server 8080
+```
+
+推送到 `main` 后，`.github/workflows/pages.yml` 会先跑测试，再自动部署到 GitHub Pages。首次使用需在仓库 Settings → Pages 中把 Source 设为 “GitHub Actions”。
+
 ## 安装
 
 官网个人版「168小时」请从上方入口下载。通用版 Week168 请前往 [GitHub Releases](https://github.com/Napoleoncqf/week168/releases)；目前可下载 v1.0.0 的 `Week168.apk`。
