@@ -39,3 +39,5 @@ Thumbs.db
 
 # PWA build output
 dist-web/
+dist-web-*/
+.claude/

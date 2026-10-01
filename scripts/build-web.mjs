@@ -1,32 +1,48 @@
-// 把 Android WebView 前端打包成可安装的 PWA，输出到 dist-web/（用于 GitHub Pages）。
-// 用法：node scripts/build-web.mjs [输出目录]
+// 把 WebView 前端打包成可安装的 PWA（默认通用版），输出到 dist-web/（用于 GitHub Pages）。
+// 用法：node scripts/build-web.mjs [输出目录] [--edition general]
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const require = createRequire(import.meta.url);
+const Edition = require("./edition.js");
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const assets = join(root, "android/app/src/main/assets");
 const web = join(root, "web");
-const out = join(root, process.argv[2] || "dist-web");
+const args = process.argv.slice(2);
+const editionFlag = args.indexOf("--edition");
+const editionId = editionFlag >= 0 ? args.splice(editionFlag, 2)[1] : "general";
+const out = join(root, args[0] || "dist-web");
+const edition = Edition.loadEdition(editionId);
 
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
-for (const name of ["styles.css", "core.js", "app.js"]) cpSync(join(assets, name), join(out, name));
-cpSync(join(web, "icons"), join(out, "icons"), { recursive: true });
-cpSync(join(web, "manifest.webmanifest"), join(out, "manifest.webmanifest"));
+Edition.stageAssets(edition, out);
+Edition.copyTree(join(web, "icons"), join(out, "icons"));
+copyFileSync(join(web, "manifest.webmanifest"), join(out, "manifest.webmanifest"));
 
-let html = readFileSync(join(assets, "index.html"), "utf8");
+let html = readFileSync(join(out, "index.html"), "utf8");
 const head = [
   '<link rel="manifest" href="manifest.webmanifest" />',
   '<link rel="icon" href="icons/icon.svg" type="image/svg+xml" />',
   '<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />',
   '<meta name="apple-mobile-web-app-capable" content="yes" />',
   '<meta name="mobile-web-app-capable" content="yes" />',
-  '<meta name="apple-mobile-web-app-title" content="Week168" />',
+  `<meta name="apple-mobile-web-app-title" content="${edition.appName}" />`,
 ].join("\n    ");
+// 新版本的 service worker 接管后自动刷新一次，避免更新后第一次打开仍是旧缓存。
+// 首次安装（此前没有 controller）不刷新。
 const register = `<script>
       if ("serviceWorker" in navigator) {
+        const hadController = Boolean(navigator.serviceWorker.controller);
+        let reloaded = false;
+        navigator.serviceWorker.addEventListener("controllerchange", () => {
+          if (!hadController || reloaded) return;
+          reloaded = true;
+          window.location.reload();
+        });
         window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
       }
     </script>`;
@@ -51,4 +67,4 @@ const sw = readFileSync(join(web, "sw.js"), "utf8")
   .replace("__BUILD_HASH__", hash.digest("hex").slice(0, 12))
   .replace("__PRECACHE__", JSON.stringify(precache));
 writeFileSync(join(out, "sw.js"), sw);
-console.log(`PWA 已生成：${relative(root, out)}（${files.length + 1} 个文件）`);
+console.log(`PWA 已生成（${editionId}）：${relative(root, out)}（${files.length + 1} 个文件）`);

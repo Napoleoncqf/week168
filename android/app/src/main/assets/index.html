@@ -6,14 +6,14 @@
     <meta name="theme-color" content="#f6f5f1" />
     <meta name="color-scheme" content="light dark" />
     <title>Week 168</title>
-    <link rel="stylesheet" href="styles.css?v=1.0.0" />
+    <link rel="stylesheet" href="styles.css?v=1.1.8" />
   </head>
   <body>
     <div class="app-shell" id="appShell">
       <header class="topbar">
         <button class="brand" type="button" data-action="go-today" aria-label="回到本周今天">
           <span class="brand-mark" aria-hidden="true"><span>168</span></span>
-          <span class="brand-copy"><strong>Week 168</strong><small id="headerSubtitle">本周，慢慢记录</small></span>
+          <span class="brand-copy"><strong data-edition-name>Week 168</strong><small id="headerSubtitle">本周，慢慢记录</small></span>
         </button>
         <button class="week-button" id="weekButton" type="button" data-action="go-current-week">
           <span id="weekButtonText">本周</span>
@@ -22,28 +22,25 @@
       </header>
 
       <main class="views" id="views">
-        <section class="view active" id="view-today" data-view="today" aria-labelledby="todayTitle">
+        <section class="view active" id="view-today" data-view="today" aria-labelledby="todayEyebrow">
           <div class="today-hero">
             <div>
               <p class="eyebrow" id="todayEyebrow">今天</p>
-              <h1 id="todayTitle">给时间一个去处</h1>
-              <p class="hero-note" id="todayNote">无需完美，想起来时记一笔就好。</p>
+              <p class="today-summary" id="todaySummary">这天已记 0小时 · 空白只是待补</p>
             </div>
             <div class="progress-orbit" id="weekProgressOrbit" aria-label="本周记录进度">
-              <div><strong id="weekProgressNumber">0</strong><small>小时</small></div>
+              <div><strong id="weekProgressNumber">0</strong><small>/168h</small></div>
             </div>
           </div>
 
           <div class="day-strip" id="dayStrip" role="tablist" aria-label="选择日期"></div>
 
-          <section class="quick-panel" aria-label="快速记录">
-            <div class="quick-copy">
-              <span class="pulse-dot" aria-hidden="true"></span>
-              <div><strong id="quickPrompt">现在在做什么？</strong><small id="quickHint">最快两步，补上最近一段</small></div>
-            </div>
-            <div class="quick-actions">
-              <button class="button secondary compact" id="continueButton" type="button" data-action="continue-last">接着上一条</button>
-              <button class="button primary compact" type="button" data-action="new-entry">记一段</button>
+          <section class="quick-panel" id="quickPanel" aria-label="快速记录">
+            <button class="button primary quick-primary" type="button" data-action="open-ai-import" data-feature="aiImport">用文字补记一天</button>
+            <button class="button primary quick-primary" type="button" data-action="new-entry" data-feature-off="aiImport">记一段</button>
+            <div class="quick-secondary">
+              <button class="button secondary" type="button" data-action="new-entry" data-feature="aiImport">手动记一段</button>
+              <button class="button secondary" id="continueButton" type="button" data-action="continue-last">接着上一条</button>
             </div>
           </section>
 
@@ -109,7 +106,9 @@
             </div>
           </section>
 
-          <div class="metric-grid">
+          <div id="editionReportSlot"></div>
+
+          <div class="metric-grid" data-default-report>
             <article class="metric-card focus"><span class="metric-icon">✦</span><small>工作/学习</small><strong id="metricWorkStudy">0小时</strong><p>工作与学习合计</p></article>
             <article class="metric-card life"><span class="metric-icon">◇</span><small>生活事务</small><strong id="metricLife">0小时</strong><p>含通勤与日常事务</p></article>
             <article class="metric-card rest"><span class="metric-icon">☾</span><small>休息娱乐</small><strong id="metricRest">0小时</strong><p>休息与娱乐合计</p></article>
@@ -140,7 +139,7 @@
           <div class="page-intro">
             <p class="eyebrow">设置</p>
             <h1 id="settingsTitle">按你的方式记录</h1>
-            <p>数据只保存在这台设备上，不上传。</p>
+            <p data-edition-text="settingsIntro">记录默认留在本机；文字识别只在你主动发送时联网。</p>
           </div>
 
           <section class="settings-group card">
@@ -152,7 +151,7 @@
             </div>
           </section>
 
-          <section class="settings-group card">
+          <section class="settings-group card" data-native-only>
             <div class="settings-row">
               <div class="settings-title"><span class="settings-icon">◷</span><div><strong>温和提醒</strong><small>每天一次，不催促、不连续打卡</small></div></div>
               <label class="switch"><input type="checkbox" id="reminderEnabled" aria-label="每天温和提醒" /><span></span></label>
@@ -166,6 +165,31 @@
             <button class="button secondary full" type="button" data-action="add-category">添加分类</button>
           </section>
 
+          <section class="settings-group card ai-settings-group" data-feature="aiImport">
+            <div class="settings-title"><span class="settings-icon">✦</span><div><strong>文字识别 API</strong><small>多组配置保存在本机 · 默认 DeepSeek</small></div></div>
+            <div class="ai-profile-list" id="aiProfileList" aria-label="已保存的 API 配置"></div>
+            <button class="button secondary full ai-new-profile-button" id="aiNewProfileButton" type="button" data-action="new-ai-profile">添加 API 配置</button>
+            <div id="aiProfileEditor" hidden>
+              <div class="ai-config-heading"><strong id="aiFormTitle">添加 API 配置</strong><button class="text-button muted" type="button" data-action="close-ai-profile-editor">取消</button></div>
+              <label class="input-field"><span>配置名称</span><input id="aiProfileName" type="text" maxlength="30" autocomplete="off" placeholder="例如：168h · DeepSeek" /></label>
+              <label class="input-field"><span>服务商</span><select id="aiProvider"><option value="deepseek">DeepSeek（默认）</option><option value="custom">其他兼容服务商</option></select></label>
+              <p class="ai-provider-help" id="aiProviderHelp">默认接口和模型已填好，只需输入 DeepSeek API Key。</p>
+              <div id="aiCustomFields" hidden>
+                <label class="input-field"><span>HTTPS 接口地址</span><input id="aiEndpoint" type="url" inputmode="url" autocomplete="off" spellcheck="false" maxlength="500" placeholder="https://服务商地址/v1/chat/completions" /></label>
+              </div>
+              <label class="input-field"><span>默认模型名称</span><select id="aiModelSelect"></select></label>
+              <label class="input-field" id="aiManualModelWrap" hidden><span>手动填写模型 ID</span><input id="aiModel" type="text" autocomplete="off" spellcheck="false" maxlength="100" placeholder="填写服务商提供的模型 ID" /></label>
+              <label class="input-field"><span>API Key</span><input id="aiKey" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="粘贴 DeepSeek API Key" /></label>
+              <div class="two-buttons"><button class="button primary" type="button" data-action="save-ai-profile">保存配置</button><button class="button secondary" id="aiTestProfileButton" type="button" data-action="test-ai-profile">测试 API</button></div>
+              <p class="ai-privacy-note">密钥加密保存在本机，不会进入 JSON 备份。测试会发送固定短句，可能产生少量费用；不会发送你的时间记录。</p>
+              <div class="ai-profile-edit-actions" id="aiProfileEditActions" hidden>
+                <button class="button secondary" id="aiActivateProfileButton" type="button" data-action="activate-ai-profile">设为默认</button>
+                <button class="button danger" id="aiDeleteProfileButton" type="button" data-action="delete-ai-profile">删除配置</button>
+              </div>
+            </div>
+            <p class="ai-settings-status" id="aiSettingsStatus">仅在 Android 安装版中使用。</p>
+          </section>
+
           <section class="settings-group card">
             <div class="settings-title"><span class="settings-icon">⇅</span><div><strong>备份与恢复</strong><small>导出 JSON 文件，换机也不怕</small></div></div>
             <div class="two-buttons">
@@ -174,6 +198,7 @@
             </div>
             <p class="recovery-notice" id="recoveryNotice" hidden>检测到过异常的本机数据。原始内容不会被静默覆盖，你可以先保存一份抢救副本。</p>
             <button class="button secondary full" id="exportRecoveryButton" type="button" data-action="export-recovery" hidden>导出原始抢救副本</button>
+            <p class="web-storage-note" id="webStorageNote" data-web-only>网页版的记录只保存在当前浏览器里，浏览器清理网站数据时可能一并删除，也不会有每日提醒。请定期导出备份。</p>
             <input type="file" id="importFile" accept="application/json,.json" hidden />
           </section>
 
@@ -185,7 +210,7 @@
           </section>
 
           <section class="settings-group card about-card">
-            <div><strong>Week 168</strong><small>你的时间，只属于你。</small></div><span>v1.0.0</span>
+            <div><strong data-edition-name>Week 168</strong><small>你的时间，只属于你。</small></div><span data-edition-version>v1.1.8</span>
           </section>
         </section>
       </main>
@@ -209,7 +234,7 @@
       <div class="sheet-header">
         <button class="text-button muted" type="button" data-action="close-entry">取消</button>
         <h2 id="entrySheetTitle">记一段时间</h2>
-        <button class="text-button strong" type="button" data-action="save-entry">保存</button>
+        <span class="sheet-header-spacer" aria-hidden="true"></span>
       </div>
       <form id="entryForm" autocomplete="off">
         <input type="hidden" id="entryId" />
@@ -232,13 +257,15 @@
           <div class="category-picker" id="categoryPicker"></div>
         </div>
 
-        <label class="input-field"><span>做了什么 <small>可选</small></span><input type="text" id="entryContent" maxlength="160" placeholder="例如：整理项目资料" /></label>
+        <label class="input-field"><span>做了什么 <small>可选</small></span><input type="text" id="entryContent" maxlength="160" placeholder="例如：整理项目资料" data-edition-placeholder="entryContentPlaceholder" /></label>
 
         <details class="more-fields" id="moreFields">
-          <summary>补充地点与备注 <span>可选</span></summary>
+          <summary><b data-feature="ratings">补充地点、感受与备注</b><b data-feature-off="ratings">补充地点与备注</b> <span>可选</span></summary>
           <div class="more-content">
             <label class="input-field"><span>地点 / 场景</span><input type="text" id="entryLocation" maxlength="80" list="locationOptions" placeholder="家、办公室、图书馆……" /></label>
             <datalist id="locationOptions"><option value="家"></option><option value="办公室"></option><option value="图书馆"></option><option value="健身房"></option><option value="通勤途中"></option><option value="户外"></option></datalist>
+            <div class="rating-field" data-feature="ratings"><div><span>能量</span><small>1 很低 · 5 很充足</small></div><div class="rating" id="energyRating" data-value="0" aria-label="能量评分"></div></div>
+            <div class="rating-field" data-feature="ratings"><div><span>心情</span><small>1 低落 · 5 愉悦</small></div><div class="rating mood" id="moodRating" data-value="0" aria-label="心情评分"></div></div>
             <label class="input-field"><span>备注</span><textarea id="entryNote" maxlength="1200" rows="3" placeholder="有什么值得记住的？"></textarea></label>
           </div>
         </details>
@@ -246,15 +273,47 @@
         <div class="edit-actions hidden" id="editActions">
           <button class="button danger full" type="button" data-action="delete-entry">删除这条记录</button>
         </div>
-        <div class="sheet-safe-space"></div>
+        <div class="sheet-footer">
+          <button class="button primary full" type="button" data-action="save-entry">保存</button>
+        </div>
       </form>
+    </section>
+
+    <div class="sheet-backdrop hidden" id="aiBackdrop" aria-hidden="true"></div>
+    <section class="bottom-sheet ai-sheet hidden" id="aiSheet" data-feature="aiImport" role="dialog" aria-modal="true" aria-labelledby="aiSheetTitle" tabindex="-1">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-header">
+        <button class="text-button muted" type="button" data-action="close-ai-import">关闭</button>
+        <h2 id="aiSheetTitle">用文字补记一天</h2>
+        <span class="sheet-header-spacer" aria-hidden="true"></span>
+      </div>
+      <label class="input-field"><span>要补记的日期</span><input id="aiDate" type="date" /></label>
+      <label class="input-field"><span>回想这一天</span><textarea id="aiText" maxlength="4000" rows="6" placeholder="例如：早上7点起床，8点到9点通勤，9点到12点工作，12点到13点午饭，晚上20点到22点学习。"></textarea></label>
+      <details class="ai-recognition-settings" id="aiRecognitionSettings">
+        <summary><span>识别设置</span><span class="ai-recognition-summary" id="aiRecognitionSummary">DeepSeek Flash · 快速</span></summary>
+        <label class="input-field"><span>API 配置</span><select id="aiImportProfile"></select></label>
+        <label class="input-field"><span>模型名称（本次识别）</span><select id="aiImportModel"></select></label>
+        <label class="input-field" id="aiImportCustomModelWrap" hidden><span>自定义模型名称</span><input id="aiImportCustomModel" type="text" maxlength="100" autocomplete="off" placeholder="输入模型 ID" /></label>
+        <label class="ai-thinking-option" id="aiThinkingOption" hidden><input id="aiDeepThinking" type="checkbox" /><span>深度识别 <small>复杂记录可开启，通常需要更久</small></span></label>
+      </details>
+      <p class="ai-privacy-note" id="aiSendNotice">确认文字后点“发送并识别”。仅这段文字、所选日期和分类名称会发送给你设置的 API；结果会先作为草稿展示。</p>
+      <p class="ai-setup-hint" id="aiSetupHint" hidden>还没有可用的接口配置。<button type="button" data-action="go-ai-settings">去设置</button></p>
+      <button class="button primary full" id="aiAnalyzeButton" type="button" data-action="analyze-text">发送并识别</button>
+      <div class="ai-result" id="aiResult" hidden>
+        <div class="ai-result-heading"><strong>识别草稿</strong><small id="aiResultSummary"></small></div>
+        <div class="ai-draft-list" id="aiDraftList"></div>
+        <div class="ai-unresolved" id="aiUnresolved" hidden><strong>需要你补充时间</strong><div id="aiUnresolvedList"></div></div>
+        <p class="ai-validation-summary" id="aiValidationSummary" role="status"></p>
+        <button class="button primary full" id="aiSaveButton" type="button" data-action="save-ai-drafts">保存选中记录</button>
+      </div>
+      <div class="sheet-safe-space"></div>
     </section>
 
     <div class="sheet-backdrop hidden" id="categoryBackdrop" aria-hidden="true"></div>
     <section class="mini-sheet hidden" id="categorySheet" role="dialog" aria-modal="true" aria-labelledby="categorySheetTitle" tabindex="-1">
       <div class="sheet-handle" aria-hidden="true"></div>
       <h2 id="categorySheetTitle">添加自定义分类</h2>
-      <label class="input-field"><span>分类名称</span><input type="text" id="newCategoryName" maxlength="12" placeholder="例如：照护" /></label>
+      <label class="input-field"><span>分类名称</span><input type="text" id="newCategoryName" maxlength="12" placeholder="例如：照护" data-edition-placeholder="categoryNamePlaceholder" /></label>
       <div class="form-label"><strong>选择颜色</strong></div>
       <div class="color-picker" id="colorPicker"></div>
       <div class="two-buttons"><button class="button secondary" type="button" data-action="close-category">取消</button><button class="button primary" type="button" data-action="save-category">添加</button></div>
@@ -262,7 +321,9 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <script src="core.js?v=1.0.0"></script>
-    <script src="app.js?v=1.0.0"></script>
+    <script src="edition.js"></script>
+    <script src="core.js?v=1.1.8"></script>
+    <script src="text-import.js?v=1.1.8"></script>
+    <script src="app.js?v=1.1.8"></script>
   </body>
 </html>

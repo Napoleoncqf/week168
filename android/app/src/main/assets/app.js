@@ -3,9 +3,27 @@
 
   const Core = window.Time168Core;
   if (!Core) throw new Error("Time168Core is required");
+  // Generated from editions/<id>.json at build time (see scripts/edition.js).
+  const Edition = window.Time168Edition;
+  if (!Edition) throw new Error("Time168Edition is required");
+  const FEATURES = Edition.features;
+  // Optional edition-specific weekly report (editions/<id>/report.js), bundled
+  // into edition.js at build time. Without it the neutral report is used.
+  const ReportExt = window.Time168ReportExtension || null;
+  const TextImport = window.Time168TextImport;
+  const DEEPSEEK_ENDPOINT = "https://api.deepseek.com/chat/completions";
+  const DEEPSEEK_MODEL = "deepseek-flash";
 
   const STORAGE_KEY = "time168.state.v1";
   const RECOVERY_KEY = "time168.recovery.v1";
+  // Browser-only bookkeeping, kept outside the state so backups stay unchanged.
+  const LAST_BACKUP_KEY = "time168.lastBackup.v1";
+  const LAST_NUDGE_KEY = "time168.lastBackupNudge.v1";
+  const BACKUP_NUDGE_DAYS = 14;
+  // Unsent text for "用文字补记一天" survives the WebView being killed in the
+  // background. It stays on this device and never enters backups.
+  const AI_DRAFT_KEY = "time168.aiDraft.v1";
+  const AI_DRAFT_MAX_AGE_DAYS = 7;
   const DATA_VERSION = 1;
   const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
   const CATEGORY_COLORS = [
@@ -13,18 +31,7 @@
     "#7068ad", "#3f9272", "#398a9d", "#bc785f",
     "#b2607d", "#9b714f", "#7a7e8d", "#65816d",
   ];
-  const DEFAULT_CATEGORIES = [
-    { id: "sleep", name: "睡眠", color: "#5b7fa3", sleep: true },
-    { id: "work", name: "工作", color: "#a56d4e" },
-    { id: "study", name: "学习", color: "#7068ad" },
-    { id: "commute", name: "通勤", color: "#6d8f83" },
-    { id: "routine", name: "生活事务", color: "#b39458" },
-    { id: "exercise", name: "运动", color: "#3f9272" },
-    { id: "rest", name: "休息", color: "#398a9d" },
-    { id: "social", name: "社交", color: "#b2607d" },
-    { id: "leisure", name: "娱乐", color: "#bc785f" },
-    { id: "other", name: "其他", color: "#65816d" },
-  ].map((item) => ({ ...item, custom: false }));
+  const DEFAULT_CATEGORIES = Edition.categories.map((item) => ({ ...item, custom: false }));
   const MAX_CATEGORIES = 200;
   const RESERVED_CATEGORY_IDS = new Set(["__proto__", "prototype", "constructor"]);
 
@@ -38,12 +45,28 @@
     undo: null,
     toastTimer: 0,
     shouldScrollTimeline: true,
+    quickPanelVisible: true,
     importPending: false,
     rangeSelectMode: false,
     sheetReturnFocus: Object.create(null),
     lastTodayKey: Core.toLocalDateKey(new Date()),
     dayBoundaryTimer: 0,
     recoveryExportPending: false,
+    aiDrafts: [],
+    aiUnresolved: [],
+    aiPending: false,
+    aiRequestId: "",
+    aiStartedAt: 0,
+    aiElapsedTimer: 0,
+    aiLastDurationSeconds: 0,
+    aiCustomEndpoint: "",
+    aiCustomModel: "",
+    aiDeepseekModel: DEEPSEEK_MODEL,
+    aiProfiles: [],
+    aiActiveProfileId: "",
+    aiEditingProfileId: "",
+    aiEditorOpen: false,
+    aiTestingId: "",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -335,6 +358,12 @@
 
   function effectiveTheme() {
     if (state.settings.theme !== "system") return state.settings.theme;
+    // The Android shell uses a light window theme, so the WebView's media
+    // query never reports dark there; ask the shell for the system theme.
+    const bridge = nativeBridge();
+    if (bridge && typeof bridge.isSystemDark === "function") {
+      try { return bridge.isSystemDark() ? "dark" : "light"; } catch (error) { /* Fall back to the media query. */ }
+    }
     return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
 
@@ -366,23 +395,29 @@
       if (active) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     });
-    const floatingAdd = $("floatingAdd");
-    const hideFloatingAdd = view === "settings" || view === "history";
-    floatingAdd.classList.toggle("hide-for-view", hideFloatingAdd);
-    floatingAdd.hidden = hideFloatingAdd;
-    floatingAdd.disabled = hideFloatingAdd;
-    floatingAdd.setAttribute("aria-hidden", String(hideFloatingAdd));
+    updateFloatingAddVisibility();
     const subtitles = {
       today: "本周，慢慢记录", week: "七天的时间地图", report: "看见，不评判",
       history: "每一周都算数", settings: "数据只在本机",
     };
     setText("headerSubtitle", subtitles[view]);
+    // A hidden view loses its inner scroll position, so re-anchor the timeline.
+    if (view === "today") ui.shouldScrollTimeline = true;
     if (view === "today") renderToday();
     if (view === "week") renderWeek();
     if (view === "report") renderReport();
     if (view === "history") renderHistory();
     if (view === "settings") renderSettings();
     window.scrollTo(0, 0);
+  }
+
+  function updateFloatingAddVisibility() {
+    const floatingAdd = $("floatingAdd");
+    const hidden = ui.view !== "today" || ui.quickPanelVisible;
+    floatingAdd.classList.toggle("hide-for-view", hidden);
+    floatingAdd.hidden = hidden;
+    floatingAdd.disabled = hidden;
+    floatingAdd.setAttribute("aria-hidden", String(hidden));
   }
 
   function setSelectedWeek(value, selectDay) {
@@ -467,6 +502,41 @@
       canvas.appendChild(row);
     }
 
+    // Untracked time up to now is shown as a gentle "待补" block that opens
+    // the entry sheet with the exact gap prefilled.
+    const gapLimit = new Date(Math.min(dateEnd, Core.roundToQuarter(new Date(), "floor")));
+    const fillableGaps = [];
+    Core.subtractIntervals(dateStart, gapLimit, entries).forEach((gap) => {
+      // A single entry must stay shorter than a full day. Show a fully
+      // untracked day as two halves so each label matches its prefilled range.
+      if (Core.durationMinutes(gap.start, gap.end) >= Core.DAY_MINUTES) {
+        const midpoint = Core.addMinutes(gap.start, Core.DAY_MINUTES / 2);
+        fillableGaps.push({ start: gap.start, end: midpoint }, { start: midpoint, end: gap.end });
+      } else {
+        fillableGaps.push(gap);
+      }
+    });
+    fillableGaps.forEach((gap) => {
+      const gapStart = Core.durationMinutes(dateStart, gap.start);
+      const gapMinutes = Core.durationMinutes(gap.start, gap.end);
+      if (gapMinutes < 15) return;
+      const gapEnd = gapStart + gapMinutes;
+      const range = `${Core.minutesToTime(gapStart)}–${gapEnd >= Core.DAY_MINUTES ? "24:00" : Core.minutesToTime(gapEnd)}`;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "timeline-gap";
+      button.dataset.action = "fill-gap";
+      button.dataset.start = String(gapStart);
+      button.dataset.end = String(gapEnd);
+      button.style.top = `${(gapStart / 60) * 62 + 2}px`;
+      button.style.height = `${Math.max(22, (gapMinutes / 60) * 62 - 4)}px`;
+      button.innerHTML = gapMinutes >= 45
+        ? `<strong>待补 ${range}</strong><span>${Core.formatDuration(gapMinutes, true)} · 点此补记</span>`
+        : `<strong>待补 ${range}</strong>`;
+      button.setAttribute("aria-label", `待补 ${range}，点按补记`);
+      canvas.appendChild(button);
+    });
+
     entries.forEach((entry) => {
       const clippedStart = new Date(Math.max(new Date(entry.start), dateStart));
       const clippedEnd = new Date(Math.min(new Date(entry.end), dateEnd));
@@ -485,7 +555,10 @@
       const startLabel = Core.minutesToTime(Core.minutesOfDay(new Date(entry.start)));
       const endLabel = Core.minutesToTime(Core.minutesOfDay(new Date(entry.end)));
       const crosses = Core.toLocalDateKey(entry.start) !== Core.toLocalDateKey(entry.end);
-      button.innerHTML = `<strong>${escapeHtml(entry.content || category.name)}</strong><span>${startLabel}–${endLabel}${crosses ? " 次日" : ""} · ${escapeHtml(category.name)}</span>`;
+      const timeLabel = `${startLabel}–${endLabel}${crosses ? " 次日" : ""}`;
+      button.innerHTML = entry.content
+        ? `<strong>${escapeHtml(entry.content)}</strong><span>${timeLabel} · ${escapeHtml(category.name)}</span>`
+        : `<strong>${escapeHtml(category.name)}</strong><span>${timeLabel}</span>`;
       button.setAttribute("aria-label", `${category.name}，${startLabel}到${endLabel}，点按编辑`);
       canvas.appendChild(button);
     });
@@ -519,14 +592,14 @@
     const date = Core.fromLocalDateKey(ui.selectedDate);
     const isToday = isSameDate(date, new Date());
     setText("todayEyebrow", isToday ? "今天" : `${formatMonthDay(date)} · 周${WEEKDAYS[(date.getDay() + 6) % 7]}`);
-    setText("todayTitle", isToday ? "给时间一个去处" : "回想这一天");
-    setText("todayNote", isToday ? "无需完美，想起来时记一笔就好。" : "补上记得的部分，留白也没有关系。");
-    const stats = Core.weekStats(state.entries, ui.selectedWeek, state.categories);
-    setText("weekProgressNumber", formatHourNumber(stats.trackedMinutes));
+    const dayTracked = Core.intervalUnionMinutes(dayIntervals(date));
+    setText("todaySummary", `${isToday ? "今天" : "这天"}已记 ${formatHours(dayTracked)} · 空白只是待补`);
+    const stats = weekStats(ui.selectedWeek);
+    setText("weekProgressNumber", String(Math.round(stats.trackedMinutes / 60)));
     $("weekProgressOrbit").style.setProperty("--progress", `${Math.min(360, stats.trackedMinutes / Core.WEEK_MINUTES * 360)}deg`);
     const latest = state.entries.slice().sort((a, b) => new Date(b.end) - new Date(a.end))[0];
     $("continueButton").disabled = !latest;
-    setText("quickHint", latest ? `上一条：${categoryById(latest.categoryId).name}` : "最快两步，补上最近一段");
+    setText("continueButton", latest ? `接着上一条 · ${categoryById(latest.categoryId).name}` : "接着上一条");
   }
 
   function categoryTotalsSorted(stats) {
@@ -607,7 +680,7 @@
 
   function renderWeek() {
     updateWeekChrome();
-    const stats = Core.weekStats(state.entries, ui.selectedWeek, state.categories);
+    const stats = weekStats(ui.selectedWeek);
     setText("heatmapCoverage", `已记 ${formatHours(stats.trackedMinutes)}`);
     renderHeatmap(stats);
     renderCategoryBars("weekCategoryBars", stats);
@@ -615,7 +688,7 @@
 
   function renderReport() {
     updateWeekChrome();
-    const stats = Core.weekStats(state.entries, ui.selectedWeek, state.categories);
+    const stats = weekStats(ui.selectedWeek);
     setText("reportTracked", formatHourNumber(stats.trackedMinutes));
     setText("reportWeekLabel", ui.selectedWeek === Core.weekKey(new Date()) ? "本周 · 基于当前记录" : `${formatWeekRange(ui.selectedWeek)} · 基于当前记录`);
     setText("reportCoverage", stats.untrackedMinutes
@@ -625,11 +698,15 @@
       ? "留白也是真实生活的一部分。"
       : "完整看见这一周，也记得温柔看待自己。");
     $("reportDonut").style.setProperty("--donut-progress", `${Math.min(360, stats.trackedMinutes / Core.WEEK_MINUTES * 360)}deg`);
-
-    setText("metricWorkStudy", formatHours(stats.workStudyMinutes));
-    setText("metricLife", formatHours(stats.lifeMinutes));
-    setText("metricRest", formatHours(stats.restLeisureMinutes));
-    setText("metricUntracked", formatHours(stats.untrackedMinutes));
+    let donutAngle = 0;
+    const donutStops = categoryTotalsSorted(stats).map(([id, minutes]) => {
+      const from = donutAngle;
+      donutAngle = Math.min(360, donutAngle + minutes / Core.WEEK_MINUTES * 360);
+      return `${safeColor(categoryById(id).color)} ${from}deg ${donutAngle}deg`;
+    });
+    $("reportDonut").style.setProperty("--donut-gradient", donutStops.length
+      ? `conic-gradient(${donutStops.join(", ")}, var(--surface-soft) ${donutAngle}deg)`
+      : "");
 
     const insights = [];
     if (!stats.trackedMinutes) {
@@ -637,24 +714,44 @@
     } else {
       const coverage = Math.round(stats.trackedMinutes / Core.WEEK_MINUTES * 100);
       insights.push({ symbol: "◷", title: `已看见这一周的 ${coverage}%`, text: stats.untrackedMinutes ? "以下观察都只基于当前记录，留白无需被评价。" : "这一周已经完整记录，可以安心回看时间去向。" });
-      const totals = categoryTotalsSorted(stats);
-      if (totals.length) {
-        const [topId, topMinutes] = totals[0];
-        insights.push({
-          symbol: "↗",
-          title: `目前最多的是${categoryById(topId).name}`,
-          text: `${formatHours(topMinutes)}，占已记录时间 ${formatPercentage(topMinutes / stats.trackedMinutes)}%。`,
-        });
-      }
-      const overview = [
-        `工作/学习 ${formatHours(stats.workStudyMinutes)}`,
-        `生活事务 ${formatHours(stats.lifeMinutes)}`,
-        `休息娱乐 ${formatHours(stats.restLeisureMinutes)}`,
-      ];
-      insights.push({ symbol: "◇", title: "三个通用维度", text: `${overview.join(" · ")}。它们只是时间分布，不是好坏评分。` });
     }
+    insights.push(...(ReportExt ? ReportExt.render(stats, {
+      $, setText, formatHours, formatPercentage,
+      previous: weekStats(Core.addDays(Core.fromLocalDateKey(ui.selectedWeek), -7)),
+    }) : renderGeneralReport(stats)));
     $("insightList").innerHTML = insights.map((item) => `<article class="insight-item"><span class="insight-symbol">${escapeHtml(item.symbol)}</span><div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.text)}</p></div></article>`).join("");
     renderCategoryBars("reportCategoryBars", stats);
+  }
+
+  function weekStats(week) {
+    const stats = Core.weekStats(state.entries, week, state.categories);
+    return ReportExt ? ReportExt.extendStats(stats) : stats;
+  }
+
+  // Neutral report: three generic dimensions, never a score.
+  function renderGeneralReport(stats) {
+    setText("metricWorkStudy", formatHours(stats.workStudyMinutes));
+    setText("metricLife", formatHours(stats.lifeMinutes));
+    setText("metricRest", formatHours(stats.restLeisureMinutes));
+    setText("metricUntracked", formatHours(stats.untrackedMinutes));
+    if (!stats.trackedMinutes) return [];
+    const insights = [];
+    const totals = categoryTotalsSorted(stats);
+    if (totals.length) {
+      const [topId, topMinutes] = totals[0];
+      insights.push({
+        symbol: "↗",
+        title: `目前最多的是${categoryById(topId).name}`,
+        text: `${formatHours(topMinutes)}，占已记录时间 ${formatPercentage(topMinutes / stats.trackedMinutes)}%。`,
+      });
+    }
+    const overview = [
+      `工作/学习 ${formatHours(stats.workStudyMinutes)}`,
+      `生活事务 ${formatHours(stats.lifeMinutes)}`,
+      `休息娱乐 ${formatHours(stats.restLeisureMinutes)}`,
+    ];
+    insights.push({ symbol: "◇", title: "三个通用维度", text: `${overview.join(" · ")}。它们只是时间分布，不是好坏评分。` });
+    return insights;
   }
 
   function weeksWithData() {
@@ -666,13 +763,20 @@
     return Array.from(keys).filter(Boolean).sort().reverse();
   }
 
+  function historyStats(stats) {
+    const pairs = ReportExt
+      ? ReportExt.historyStats(stats)
+      : [[stats.workStudyMinutes, "工作/学习"], [stats.restLeisureMinutes, "休息娱乐"]];
+    return pairs.map(([minutes, label]) => `<span><b>${formatHours(minutes)}</b>${label}</span>`).join("");
+  }
+
   function renderHistory() {
     updateWeekChrome();
     const root = $("historyList");
     if (!root) return;
     const currentKey = Core.weekKey(new Date());
     root.innerHTML = weeksWithData().map((key) => {
-      const stats = Core.weekStats(state.entries, key, state.categories);
+      const stats = weekStats(key);
       const totals = categoryTotalsSorted(stats);
       const segments = totals.map(([id, minutes]) => {
         const category = categoryById(id);
@@ -680,7 +784,7 @@
       }).join("");
       const topCategory = totals[0] ? categoryById(totals[0][0]).name : "暂无分类";
       const recordCount = stats.relevant.length;
-      return `<button class="history-card" type="button" data-action="open-history-week" data-week="${key}"><span class="history-card-head"><span><strong>${key === currentKey ? "本周" : formatWeekRange(key)}</strong><small>${recordCount ? `${recordCount} 条记录 · 主要是 ${escapeHtml(topCategory)}` : "还没有记录，随时可以补上"}</small></span><span>已记 ${formatHours(stats.trackedMinutes)}</span></span><span class="history-mini-bar">${segments}</span><span class="history-stats"><span><b>${formatHours(stats.workStudyMinutes)}</b>工作/学习</span><span><b>${formatHours(stats.restLeisureMinutes)}</b>休息娱乐</span><span><b>${formatHours(stats.untrackedMinutes)}</b>待补</span></span></button>`;
+      return `<button class="history-card" type="button" data-action="open-history-week" data-week="${key}"><span class="history-card-head"><span><strong>${key === currentKey ? "本周" : formatWeekRange(key)}</strong><small>${recordCount ? `${recordCount} 条记录 · 主要是 ${escapeHtml(topCategory)}` : "还没有记录，随时可以补上"}</small></span><span>已记 ${formatHours(stats.trackedMinutes)}</span></span><span class="history-mini-bar">${segments}</span><span class="history-stats">${historyStats(stats)}<span><b>${formatHours(stats.untrackedMinutes)}</b>待补</span></span></button>`;
     }).join("");
   }
 
@@ -704,6 +808,622 @@
     const recoveryNotice = $("recoveryNotice");
     if (recoveryButton) recoveryButton.hidden = !preservedRawState;
     if (recoveryNotice) recoveryNotice.hidden = !preservedRawState;
+    renderAiSettings();
+  }
+
+  function readAiBridge() {
+    const bridge = nativeBridge();
+    return bridge && typeof bridge.getAiProfiles === "function" ? bridge : null;
+  }
+
+  function readAiProfiles() {
+    const bridge = readAiBridge();
+    if (!bridge) return { ok: false, message: "文字识别需在 Android 安装版中使用。", profiles: [] };
+    try {
+      const result = JSON.parse(bridge.getAiProfiles());
+      return result && result.ok && Array.isArray(result.profiles)
+        ? result : { ok: false, message: result.message || "本机 API 配置无法读取", profiles: [] };
+    } catch (error) {
+      return { ok: false, message: "本机 API 配置无法读取", profiles: [] };
+    }
+  }
+
+  function resetAiProfileForm() {
+    ui.aiEditingProfileId = "";
+    ui.aiCustomEndpoint = "";
+    ui.aiCustomModel = "";
+    ui.aiDeepseekModel = DEEPSEEK_MODEL;
+    $("aiFormTitle").textContent = "添加 API 配置";
+    $("aiProfileName").value = "DeepSeek";
+    $("aiEndpoint").value = DEEPSEEK_ENDPOINT;
+    $("aiProvider").value = "deepseek";
+    $("aiKey").value = "";
+    renderAiSettingsModels(DEEPSEEK_MODEL);
+    updateAiProviderView();
+    $("aiTestProfileButton").disabled = true;
+  }
+
+  function currentAiFormModel() {
+    return $("aiModelSelect").value === "__custom"
+      ? $("aiModel").value.trim() : $("aiModelSelect").value;
+  }
+
+  function aiModelName(id, name) {
+    if (id === DEEPSEEK_MODEL || id === "deepseek-v4-flash") return "DeepSeek Flash";
+    if (id === "deepseek-v4-pro") return "DeepSeek V4 Pro";
+    return typeof name === "string" && name.trim() ? name.trim() : id;
+  }
+
+  function aiModelOptionLabel(id, name) {
+    const displayName = aiModelName(id, name);
+    return displayName === id || id === DEEPSEEK_MODEL || id === "deepseek-v4-pro"
+      ? displayName : `${displayName} · ${id}`;
+  }
+
+  function renderAiSettingsModels(selectedModel) {
+    const select = $("aiModelSelect");
+    const deepseek = $("aiProvider").value === "deepseek";
+    const endpoint = deepseek ? DEEPSEEK_ENDPOINT : $("aiEndpoint").value.trim();
+    const editing = ui.aiProfiles.find((profile) => profile.id === ui.aiEditingProfileId && profile.endpoint === endpoint);
+    const models = new Map();
+    const add = (id, name) => {
+      if (typeof id === "string" && id && id.length <= 100 && !models.has(id)) {
+        models.set(id, typeof name === "string" && name ? name : id);
+      }
+    };
+    if (deepseek) {
+      add(DEEPSEEK_MODEL, "DeepSeek Flash");
+      add("deepseek-v4-pro", "DeepSeek V4 Pro");
+    }
+    if (editing) {
+      add(editing.model, editing.model);
+      (Array.isArray(editing.models) ? editing.models : []).forEach((item) => add(item.id, item.name));
+    }
+    select.innerHTML = Array.from(models, ([id, name]) =>
+      `<option value="${escapeHtml(id)}">${escapeHtml(aiModelOptionLabel(id, name))}</option>`).join("")
+      + '<option value="__custom">手动填写其他模型…</option>';
+    select.value = models.has(selectedModel) ? selectedModel : "__custom";
+    $("aiModel").value = select.value === "__custom" ? selectedModel : "";
+    $("aiManualModelWrap").hidden = select.value !== "__custom";
+  }
+
+  function renderAiProfileList() {
+    const root = $("aiProfileList");
+    root.innerHTML = ui.aiProfiles.length ? ui.aiProfiles.map((profile) => {
+      let host = profile.endpoint;
+      try { host = new URL(profile.endpoint).host; } catch (error) { /* Keep the saved address. */ }
+      const active = profile.id === ui.aiActiveProfileId;
+      return `<article class="ai-profile-card${active ? " active" : ""}">
+        <div class="ai-profile-head"><strong>${escapeHtml(profile.name)}</strong>${active ? "<small>默认</small>" : ""}</div>
+        <small class="ai-profile-meta">${escapeHtml(aiModelName(profile.model))} · ${escapeHtml(host)}</small>
+        <button class="button secondary compact" type="button" data-action="edit-ai-profile" data-id="${escapeHtml(profile.id)}" aria-label="管理 ${escapeHtml(profile.name)}">管理</button>
+        </article>`;
+    }).join("") : '<p class="ai-settings-status">添加一个 API 配置，即可用文字补记。DeepSeek 只需填写自己的 Key。</p>';
+  }
+
+  function updateAiProfileEditor() {
+    $("aiProfileEditor").hidden = !ui.aiEditorOpen;
+    const editing = ui.aiProfiles.find((profile) => profile.id === ui.aiEditingProfileId);
+    $("aiProfileEditActions").hidden = !editing;
+    $("aiActivateProfileButton").dataset.id = editing ? editing.id : "";
+    $("aiDeleteProfileButton").dataset.id = editing ? editing.id : "";
+    $("aiActivateProfileButton").hidden = !editing || editing.id === ui.aiActiveProfileId;
+    $("aiTestProfileButton").disabled = !editing || Boolean(ui.aiTestingId);
+  }
+
+  function closeAiProfileEditor(restoreFocus) {
+    ui.aiEditorOpen = false;
+    ui.aiEditingProfileId = "";
+    $("aiKey").value = "";
+    updateAiProfileEditor();
+    if (restoreFocus !== false) $("aiNewProfileButton").focus({ preventScroll: true });
+  }
+
+  function renderAiSettings() {
+    const result = readAiProfiles();
+    if (result.ok) {
+      ui.aiProfiles = result.profiles;
+      ui.aiActiveProfileId = String(result.activeId || "");
+    }
+    renderAiProfileList();
+    if (result.ok && ui.aiEditingProfileId && !ui.aiProfiles.some((profile) => profile.id === ui.aiEditingProfileId)) {
+      closeAiProfileEditor(false);
+    }
+    updateAiProfileEditor();
+    $("aiSettingsStatus").textContent = result.ok
+      ? (ui.aiProfiles.length ? "密钥已加密保存在本机；点“管理”可编辑或测试。" : "保存配置后即可测试连接与模型。")
+      : result.message;
+  }
+
+  function updateAiProviderView() {
+    const custom = $("aiProvider").value === "custom";
+    $("aiCustomFields").hidden = !custom;
+    $("aiProviderHelp").textContent = custom
+      ? "填写完整的 HTTPS Chat Completions 地址，选择或手动填写模型，再输入 API Key。"
+      : "DeepSeek 接口已填好；可选默认模型，输入 API Key 后保存。";
+    const editing = ui.aiProfiles.find((profile) => profile.id === ui.aiEditingProfileId);
+    const endpoint = custom ? $("aiEndpoint").value.trim() : DEEPSEEK_ENDPOINT;
+    $("aiKey").placeholder = editing && editing.endpoint === endpoint
+      ? "留空保留已保存的密钥"
+      : custom ? "粘贴该服务商的 API Key" : "粘贴 DeepSeek API Key";
+  }
+
+  function onAiProviderChange() {
+    if ($("aiProvider").value === "deepseek") {
+      if (!$("aiCustomFields").hidden) {
+        ui.aiCustomEndpoint = $("aiEndpoint").value.trim();
+        ui.aiCustomModel = currentAiFormModel();
+      }
+      $("aiEndpoint").value = DEEPSEEK_ENDPOINT;
+      renderAiSettingsModels(ui.aiDeepseekModel);
+    } else {
+      ui.aiDeepseekModel = currentAiFormModel() || DEEPSEEK_MODEL;
+      $("aiEndpoint").value = ui.aiCustomEndpoint;
+      renderAiSettingsModels(ui.aiCustomModel);
+    }
+    updateAiProviderView();
+  }
+
+  function onAiSettingsModelChange() {
+    const manual = $("aiModelSelect").value === "__custom";
+    $("aiManualModelWrap").hidden = !manual;
+    if (manual) $("aiModel").focus();
+  }
+
+  function saveAiProfile() {
+    const bridge = readAiBridge();
+    if (!bridge || typeof bridge.saveAiProfile !== "function") {
+      showToast("请在 Android 安装版中配置文字识别");
+      return;
+    }
+    try {
+      const deepseek = $("aiProvider").value === "deepseek";
+      const result = JSON.parse(bridge.saveAiProfile(
+        ui.aiEditingProfileId,
+        $("aiProfileName").value.trim(),
+        deepseek ? DEEPSEEK_ENDPOINT : $("aiEndpoint").value.trim(),
+        currentAiFormModel(),
+        $("aiKey").value.trim()
+      ));
+      showToast(result.message || (result.ok ? "配置已保存" : "配置保存失败"));
+      if (result.ok) {
+        closeAiProfileEditor(false);
+        renderAiSettings();
+        $("aiNewProfileButton").focus({ preventScroll: true });
+      }
+    } catch (error) {
+      showToast("配置保存失败，请检查输入内容");
+    }
+  }
+
+  function newAiProfile() {
+    resetAiProfileForm();
+    ui.aiEditorOpen = true;
+    updateAiProfileEditor();
+    $("aiSettingsStatus").textContent = "新增配置不会影响已保存的 API Key。";
+    $("aiProfileEditor").scrollIntoView({ block: "start" });
+  }
+
+  function editAiProfile(id) {
+    const editing = ui.aiProfiles.find((profile) => profile.id === id);
+    if (!editing) return;
+    ui.aiEditingProfileId = id;
+    ui.aiEditorOpen = true;
+    $("aiFormTitle").textContent = `编辑 ${editing.name}`;
+    $("aiProfileName").value = editing.name;
+    $("aiEndpoint").value = editing.endpoint;
+    $("aiProvider").value = editing.endpoint === DEEPSEEK_ENDPOINT ? "deepseek" : "custom";
+    $("aiKey").value = "";
+    if (editing.endpoint === DEEPSEEK_ENDPOINT) {
+      ui.aiDeepseekModel = editing.model;
+    } else {
+      ui.aiCustomEndpoint = editing.endpoint;
+      ui.aiCustomModel = editing.model;
+    }
+    renderAiSettingsModels(editing.model);
+    updateAiProviderView();
+    updateAiProfileEditor();
+    $("aiProfileEditor").scrollIntoView({ block: "start" });
+  }
+
+  function deleteAiProfile(id) {
+    const bridge = readAiBridge();
+    const profile = ui.aiProfiles.find((item) => item.id === id);
+    if (!bridge || !profile || typeof bridge.deleteAiProfile !== "function") return;
+    if (!window.confirm(`确定删除“${profile.name}”和它的本机 API Key 吗？时间记录不会受影响。`)) return;
+    try {
+      const result = JSON.parse(bridge.deleteAiProfile(id));
+      showToast(result.message || "配置已删除");
+      if (result.ok && ui.aiEditingProfileId === id) closeAiProfileEditor(false);
+      renderAiSettings();
+    } catch (error) {
+      showToast("暂时无法删除配置");
+    }
+  }
+
+  function activateAiProfile(id) {
+    const bridge = readAiBridge();
+    if (!bridge || typeof bridge.activateAiProfile !== "function") return;
+    try {
+      const result = JSON.parse(bridge.activateAiProfile(id));
+      showToast(result.message || "无法切换配置");
+      if (result.ok) renderAiSettings();
+    } catch (error) {
+      showToast("暂时无法切换配置");
+    }
+  }
+
+  function testAiProfile(id) {
+    const bridge = readAiBridge();
+    const profileId = id || ui.aiEditingProfileId;
+    if (!profileId) {
+      showToast("请先保存配置，再测试 API");
+      return;
+    }
+    const editing = ui.aiProfiles.find((profile) => profile.id === profileId);
+    const formEndpoint = $("aiProvider").value === "deepseek" ? DEEPSEEK_ENDPOINT : $("aiEndpoint").value.trim();
+    if (!id && editing && (currentAiFormModel() !== editing.model || formEndpoint !== editing.endpoint || $("aiKey").value.trim())) {
+      showToast("请先保存配置改动，再测试 API");
+      return;
+    }
+    if (!bridge || typeof bridge.testAiProfile !== "function" || ui.aiTestingId) return;
+    ui.aiTestingId = profileId;
+    $("aiSettingsStatus").textContent = "正在测试连接、API Key 和默认模型…";
+    $("aiTestProfileButton").disabled = true;
+    try {
+      bridge.testAiProfile(profileId);
+    } catch (error) {
+      ui.aiTestingId = "";
+      $("aiTestProfileButton").disabled = false;
+      showToast("无法启动 API 测试");
+    }
+  }
+
+  function receiveAiProfileTest(raw) {
+    try {
+      const payload = JSON.parse(String(raw || "{}"));
+      if (payload.requestId !== ui.aiTestingId) return;
+      ui.aiTestingId = "";
+      renderAiSettings();
+      if (ui.aiEditorOpen && ui.aiEditingProfileId === payload.requestId) {
+        renderAiSettingsModels(currentAiFormModel());
+      }
+      const result = payload.result || {};
+      $("aiSettingsStatus").textContent = result.message || "API 测试未完成";
+      showToast(result.ok ? "API 测试通过" : (result.message || "API 测试失败"));
+    } catch (error) {
+      ui.aiTestingId = "";
+      $("aiTestProfileButton").disabled = false;
+      showToast("测试结果无法读取");
+    }
+  }
+
+  function clearAiResult() {
+    ui.aiDrafts = [];
+    ui.aiUnresolved = [];
+    $("aiResult").hidden = true;
+    $("aiDraftList").replaceChildren();
+  }
+
+  function selectedAiProfile() {
+    return ui.aiProfiles.find((profile) => profile.id === $("aiImportProfile").value) || null;
+  }
+
+  function updateAiImportNotice() {
+    const profile = selectedAiProfile();
+    let destination = "你选择的 API 服务商";
+    try { if (profile) destination = new URL(profile.endpoint).host; }
+    catch (error) { /* Keep the generic disclosure. */ }
+    $("aiSendNotice").textContent = `确认文字后点“发送并识别”。仅这段文字、所选日期和分类名称会发送到 ${destination}；结果会先作为草稿展示。`;
+    $("aiSetupHint").hidden = Boolean(profile);
+    $("aiAnalyzeButton").disabled = ui.aiPending || !profile;
+    const deepseek = Boolean(profile && profile.endpoint === DEEPSEEK_ENDPOINT);
+    $("aiThinkingOption").hidden = !deepseek;
+    if (!deepseek) $("aiDeepThinking").checked = false;
+    updateAiRecognitionSummary();
+  }
+
+  function updateAiRecognitionSummary() {
+    const profile = selectedAiProfile();
+    if (!profile) {
+      $("aiRecognitionSummary").textContent = "请先添加 API 配置";
+      return;
+    }
+    const model = $("aiImportModel").value === "__custom"
+      ? $("aiImportCustomModel").value.trim() : $("aiImportModel").value;
+    const discovered = (Array.isArray(profile.models) ? profile.models : []).find((item) => item.id === model);
+    const modelName = model ? aiModelName(model, discovered && discovered.name) : "待填写模型";
+    const deepseek = profile.endpoint === DEEPSEEK_ENDPOINT;
+    $("aiRecognitionSummary").textContent = deepseek
+      ? `${modelName} · ${$("aiDeepThinking").checked ? "深度" : "快速"}`
+      : `${profile.name} · ${modelName}`;
+  }
+
+  function renderAiImportModels() {
+    const profile = selectedAiProfile();
+    const select = $("aiImportModel");
+    if (!profile) {
+      select.innerHTML = '<option value="">先选择 API 配置</option>';
+      select.value = "";
+      $("aiImportCustomModelWrap").hidden = true;
+      updateAiImportNotice();
+      return;
+    }
+    const models = new Map();
+    const add = (id, name) => {
+      if (typeof id === "string" && id && id.length <= 100 && !models.has(id)) {
+        models.set(id, typeof name === "string" && name ? name : id);
+      }
+    };
+    if (profile.endpoint === DEEPSEEK_ENDPOINT) {
+      add(DEEPSEEK_MODEL, "DeepSeek Flash");
+      add("deepseek-v4-pro", "DeepSeek V4 Pro");
+    }
+    add(profile.model, profile.model);
+    (Array.isArray(profile.models) ? profile.models : []).forEach((item) => add(item.id, item.name));
+    select.innerHTML = Array.from(models, ([id, name]) =>
+      `<option value="${escapeHtml(id)}">${escapeHtml(aiModelOptionLabel(id, name))}</option>`).join("")
+      + '<option value="__custom">手动填写其他模型…</option>';
+    select.value = profile.model;
+    $("aiImportCustomModelWrap").hidden = true;
+    updateAiImportNotice();
+  }
+
+  function renderAiImportProfiles() {
+    const result = readAiProfiles();
+    ui.aiProfiles = result.ok ? result.profiles : [];
+    ui.aiActiveProfileId = result.ok ? String(result.activeId || "") : "";
+    $("aiImportProfile").innerHTML = ui.aiProfiles.length
+      ? ui.aiProfiles.map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</option>`).join("")
+      : '<option value="">先在设置中保存 API 配置</option>';
+    $("aiImportProfile").value = ui.aiProfiles.some((profile) => profile.id === ui.aiActiveProfileId)
+      ? ui.aiActiveProfileId : (ui.aiProfiles[0] ? ui.aiProfiles[0].id : "");
+    renderAiImportModels();
+  }
+
+  function onAiImportModelChange() {
+    const manual = $("aiImportModel").value === "__custom";
+    $("aiImportCustomModelWrap").hidden = !manual;
+    if (manual) $("aiImportCustomModel").focus();
+    updateAiRecognitionSummary();
+    clearAiResult();
+  }
+
+  function openAiImport() {
+    if (!TextImport) {
+      showToast("文字识别组件暂时不可用");
+      return;
+    }
+    $("aiDate").value = ui.selectedDate;
+    if (!$("aiText").value.trim()) restoreAiDraftText();
+    $("aiDeepThinking").checked = false;
+    $("aiRecognitionSettings").open = false;
+    clearAiResult();
+    renderAiImportProfiles();
+    setSheetOpen("aiSheet", "aiBackdrop", true);
+    window.requestAnimationFrame(() => { $("aiSheet").scrollTop = 0; });
+  }
+
+  function storeAiDraftText() {
+    try {
+      const text = $("aiText").value;
+      if (text.trim()) {
+        localStorage.setItem(AI_DRAFT_KEY, JSON.stringify({ date: $("aiDate").value, text, savedAt: Date.now() }));
+      } else {
+        localStorage.removeItem(AI_DRAFT_KEY);
+      }
+    } catch (error) { /* Drafts are a convenience; typing must never fail. */ }
+  }
+
+  function restoreAiDraftText() {
+    try {
+      const draft = JSON.parse(localStorage.getItem(AI_DRAFT_KEY) || "null");
+      if (!draft || typeof draft.text !== "string" || !draft.text.trim()
+          || !(Date.now() - Number(draft.savedAt) < AI_DRAFT_MAX_AGE_DAYS * 86400000)) {
+        localStorage.removeItem(AI_DRAFT_KEY);
+        return;
+      }
+      $("aiText").value = draft.text.slice(0, 4000);
+      if (Core.fromLocalDateKey(draft.date)) $("aiDate").value = draft.date;
+      showToast("已恢复上次没发送的文字");
+    } catch (error) { /* Ignore unreadable drafts. */ }
+  }
+
+  function clearAiDraftText() {
+    $("aiText").value = "";
+    try { localStorage.removeItem(AI_DRAFT_KEY); } catch (error) { /* Optional. */ }
+  }
+
+  function closeAiImport() {
+    setSheetOpen("aiSheet", "aiBackdrop", false);
+    setAiPending(false);
+    ui.aiRequestId = "";
+  }
+
+  function setAiPending(pending) {
+    if (ui.aiElapsedTimer) window.clearInterval(ui.aiElapsedTimer);
+    ui.aiElapsedTimer = 0;
+    ui.aiPending = pending;
+    $("aiAnalyzeButton").disabled = pending || !selectedAiProfile();
+    if (pending) {
+      ui.aiStartedAt = performance.now();
+      const updateElapsed = () => {
+        $("aiAnalyzeButton").textContent = `正在识别 · ${Math.floor((performance.now() - ui.aiStartedAt) / 1000)} 秒`;
+      };
+      updateElapsed();
+      ui.aiElapsedTimer = window.setInterval(updateElapsed, 1000);
+    } else {
+      $("aiAnalyzeButton").textContent = "发送并识别";
+    }
+    $("aiDate").disabled = pending;
+    $("aiText").disabled = pending;
+    $("aiImportProfile").disabled = pending;
+    $("aiImportModel").disabled = pending;
+    $("aiImportCustomModel").disabled = pending;
+    $("aiDeepThinking").disabled = pending;
+  }
+
+  function analyzeDayText() {
+    const bridge = readAiBridge();
+    if (!bridge || typeof bridge.analyzeDayText !== "function") {
+      showToast("请在 Android 安装版中使用文字识别");
+      return;
+    }
+    if (ui.aiPending) return;
+    const profile = selectedAiProfile();
+    const model = $("aiImportModel").value === "__custom"
+      ? $("aiImportCustomModel").value.trim() : $("aiImportModel").value;
+    if (!profile || !model || model.length > 100) {
+      showToast("请选择 API 配置和有效模型");
+      return;
+    }
+    const date = $("aiDate").value;
+    const text = $("aiText").value.trim();
+    if (!Core.fromLocalDateKey(date)) {
+      showToast("请先选择有效日期");
+      return;
+    }
+    if (!text || text.length > 4000) {
+      showToast("请输入 1 到 4000 字的当天活动描述");
+      return;
+    }
+    clearAiResult();
+    ui.aiLastDurationSeconds = 0;
+    setAiPending(true);
+    ui.aiRequestId = Core.makeId("ai");
+    try {
+      bridge.analyzeDayText(JSON.stringify({
+        requestId: ui.aiRequestId,
+        profileId: profile.id,
+        model,
+        deepThinking: profile.endpoint === DEEPSEEK_ENDPOINT && $("aiDeepThinking").checked,
+        date,
+        text,
+        categories: state.categories.map((category) => ({ id: category.id, name: category.name })),
+      }));
+    } catch (error) {
+      setAiPending(false);
+      ui.aiRequestId = "";
+      showToast("无法连接文字识别服务，请检查设置");
+    }
+  }
+
+  function renderAiDrafts() {
+    const categoryOptions = '<option value="">选择分类</option>' + state.categories.map((category) =>
+      `<option value="${escapeHtml(category.id)}">${escapeHtml(category.name)}</option>`).join("");
+    $("aiDraftList").innerHTML = ui.aiDrafts.map((draft, index) => `
+      <article class="ai-draft" data-ai-index="${index}">
+        <label class="ai-draft-head"><input type="checkbox" data-ai-field="selected" ${draft.selected ? "checked" : ""} />第 ${index + 1} 段${draft.inferred ? ' <small>结束时间由下一段推断，请核对</small>' : ""}</label>
+        <div class="ai-draft-fields">
+          <label>开始 <input type="text" inputmode="numeric" maxlength="5" placeholder="09:00" data-ai-field="start" value="${escapeHtml(draft.start)}" /></label>
+          <label>结束 <input type="text" inputmode="numeric" maxlength="5" placeholder="12:00" data-ai-field="end" value="${escapeHtml(draft.end)}" /></label>
+          <label class="wide">分类 <select data-ai-field="categoryId">${categoryOptions}</select></label>
+          <label class="wide">内容 <input type="text" maxlength="160" data-ai-field="content" value="${escapeHtml(draft.content)}" /></label>
+        </div>
+        <p class="ai-draft-error" data-ai-error></p>
+      </article>`).join("");
+    all("[data-ai-index]", $("aiDraftList")).forEach((row) => {
+      const index = Number(row.dataset.aiIndex);
+      row.querySelector('[data-ai-field="categoryId"]').value = ui.aiDrafts[index].categoryId;
+    });
+    $("aiUnresolved").hidden = ui.aiUnresolved.length === 0;
+    $("aiUnresolvedList").innerHTML = ui.aiUnresolved.map((item, index) => `
+      <div class="ai-unresolved-item"><div>${escapeHtml(item.text)}<small>${escapeHtml(item.reason)}</small></div>
+        <button type="button" data-action="add-unresolved" data-index="${index}">补时间</button></div>`).join("");
+    $("aiResult").hidden = false;
+    refreshAiValidation();
+  }
+
+  function refreshAiValidation() {
+    const checked = TextImport.validateDrafts(
+      $("aiDate").value, ui.aiDrafts, state.categories, state.entries, new Date()
+    );
+    const errors = new Map(checked.errors.map((item) => [item.index, item.message]));
+    all("[data-ai-index]", $("aiDraftList")).forEach((row) => {
+      row.querySelector("[data-ai-error]").textContent = errors.get(Number(row.dataset.aiIndex)) || "";
+    });
+    $("aiResultSummary").textContent = `${ui.aiDrafts.length} 段草稿 · ${ui.aiUnresolved.length} 段待补时间`
+      + (ui.aiLastDurationSeconds ? ` · 用时 ${ui.aiLastDurationSeconds} 秒` : "");
+    $("aiValidationSummary").textContent = checked.errors.length
+      ? `${checked.errors.length} 段需要调整；已选记录不会覆盖已有时间。`
+      : checked.selectedCount ? `已选 ${checked.selectedCount} 段，确认后一次保存。`
+        : "勾选至少一段完整记录后保存。";
+    $("aiSaveButton").disabled = checked.selectedCount === 0 || checked.errors.length > 0;
+    return checked;
+  }
+
+  function onAiDraftChange(event) {
+    const row = event.target.closest("[data-ai-index]");
+    if (!row) return;
+    const draft = ui.aiDrafts[Number(row.dataset.aiIndex)];
+    const field = event.target.dataset.aiField;
+    if (!draft || !["selected", "start", "end", "categoryId", "content"].includes(field)) return;
+    draft[field] = field === "selected" ? event.target.checked : event.target.value;
+    refreshAiValidation();
+  }
+
+  function receiveAiResult(raw) {
+    if (!ui.aiPending) return;
+    try {
+      const payload = JSON.parse(String(raw || "{}"));
+      if (payload.requestId !== ui.aiRequestId) return;
+      ui.aiLastDurationSeconds = Math.round((performance.now() - ui.aiStartedAt) / 1000);
+      setAiPending(false);
+      ui.aiRequestId = "";
+      const result = payload.result || {};
+      if (!result.ok) {
+        showToast(result.message || "识别失败，请稍后重试");
+        return;
+      }
+      const parsed = TextImport.parseResponse(result.content);
+      if (!parsed.ok) {
+        showToast(parsed.message);
+        return;
+      }
+      ui.aiDrafts = parsed.drafts;
+      ui.aiUnresolved = parsed.unresolved;
+      renderAiDrafts();
+      if (!ui.aiDrafts.length && !ui.aiUnresolved.length) showToast("没有识别到明确活动，可以补充时间后重试");
+    } catch (error) {
+      setAiPending(false);
+      ui.aiRequestId = "";
+      showToast("识别结果无法解析，请换一个模型重试");
+    }
+  }
+
+  function addUnresolved(index) {
+    const item = ui.aiUnresolved[index];
+    if (!item || ui.aiDrafts.length >= TextImport.MAX_ITEMS) return;
+    ui.aiDrafts.push({ selected: true, start: "", end: "", categoryId: "", content: item.text });
+    ui.aiUnresolved.splice(index, 1);
+    renderAiDrafts();
+  }
+
+  function saveAiDrafts() {
+    const checked = refreshAiValidation();
+    if (!checked.selectedCount || checked.errors.length) {
+      showToast("请先调整时间、分类和冲突记录");
+      return;
+    }
+    const before = clone(state.entries);
+    const timestamp = new Date().toISOString();
+    const additions = checked.candidates.map((item) => ({
+      id: Core.makeId("entry"), ...item, location: "", energy: 0, mood: 0, note: "",
+      createdAt: timestamp, updatedAt: timestamp,
+    }));
+    state.entries = before.concat(additions)
+      .sort((a, b) => new Date(a.start) - new Date(b.start));
+    if (!persist()) {
+      state.entries = before;
+      return;
+    }
+    ui.selectedDate = $("aiDate").value;
+    ui.selectedWeek = Core.weekKey(Core.fromLocalDateKey(ui.selectedDate));
+    ui.shouldScrollTimeline = true;
+    clearAiDraftText();
+    closeAiImport();
+    renderAll();
+    withEntryUndo(`一次保存了 ${additions.length} 段记录`, before);
   }
 
   function renderAll() {
@@ -743,10 +1463,42 @@
     }
   }
 
+  function renderRatings() {
+    [["energyRating", "能量"], ["moodRating", "心情"]].forEach(([id, label]) => {
+      const root = $(id);
+      const value = Number(root.dataset.value || 0);
+      root.replaceChildren();
+      for (let rating = 1; rating <= 5; rating += 1) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = String(rating);
+        button.dataset.action = "set-rating";
+        button.dataset.ratingTarget = id;
+        button.dataset.value = String(rating);
+        button.classList.toggle("active", rating <= value);
+        button.setAttribute("aria-label", `${label}${rating}分`);
+        button.setAttribute("aria-pressed", String(rating === value));
+        root.appendChild(button);
+      }
+    });
+  }
+
+  function categoriesByRecentUse() {
+    const lastUsed = Object.create(null);
+    state.entries.forEach((entry) => {
+      const time = new Date(entry.end).getTime();
+      if (!(lastUsed[entry.categoryId] >= time)) lastUsed[entry.categoryId] = time;
+    });
+    return state.categories
+      .map((category, index) => ({ category, index }))
+      .sort((a, b) => (lastUsed[b.category.id] || 0) - (lastUsed[a.category.id] || 0) || a.index - b.index)
+      .map((item) => item.category);
+  }
+
   function renderCategoryPicker() {
     const root = $("categoryPicker");
     if (!root) return;
-    root.innerHTML = state.categories.map((category) => `<button class="category-choice${category.id === ui.selectedCategory ? " selected" : ""}" type="button" data-action="pick-category" data-id="${escapeHtml(category.id)}" style="--choice-color:${safeColor(category.color)}" aria-pressed="${category.id === ui.selectedCategory}"><i></i><span>${escapeHtml(category.name)}</span></button>`).join("");
+    root.innerHTML = categoriesByRecentUse().map((category) => `<button class="category-choice${category.id === ui.selectedCategory ? " selected" : ""}" type="button" data-action="pick-category" data-id="${escapeHtml(category.id)}" style="--choice-color:${safeColor(category.color)}" aria-pressed="${category.id === ui.selectedCategory}"><i></i><span>${escapeHtml(category.name)}</span></button>`).join("");
     $("entryCategory").value = ui.selectedCategory;
   }
 
@@ -763,6 +1515,15 @@
       // yet. At midnight this naturally produces 23:00–00:00 on the prior day.
       end = Core.roundToQuarter(now, "floor");
       start = Core.addMinutes(end, -60);
+      // Prefer the open gap that runs up to now, e.g. "last entry ended at
+      // 16:00" becomes 16:00–now; very long gaps keep the one-hour default.
+      const dayStart = Core.fromLocalDateKey(key);
+      const openGap = Core.subtractIntervals(dayStart, end, state.entries).pop();
+      if (openGap && openGap.end.getTime() === end.getTime()
+          && Core.durationMinutes(openGap.start, end) >= 15
+          && Core.durationMinutes(openGap.start, end) <= 12 * 60) {
+        start = openGap.start;
+      }
     } else {
       start = Core.fromLocalDateKey(key, 9 * 60);
       end = Core.addMinutes(start, 60);
@@ -783,10 +1544,16 @@
     $("entryContent").value = entry.content || "";
     $("entryLocation").value = entry.location || "";
     $("entryNote").value = entry.note || "";
-    $("moreFields").open = Boolean(entry.location || entry.note);
+    $("energyRating").dataset.value = String(Number(entry.energy) || 0);
+    $("moodRating").dataset.value = String(Number(entry.mood) || 0);
+    // Without rating controls the hidden dataset still carries legacy values,
+    // so editing an entry keeps its energy/mood in the JSON schema.
+    $("moreFields").open = Boolean(entry.location || entry.note
+      || (FEATURES.ratings && (entry.energy || entry.mood)));
     $("editActions").classList.toggle("hidden", !isEdit);
     setText("entrySheetTitle", isEdit ? "编辑这段时间" : "记一段时间");
     renderCategoryPicker();
+    renderRatings();
     updateDurationHelper();
   }
 
@@ -893,9 +1660,8 @@
       categoryId: ui.selectedCategory,
       content: $("entryContent").value.trim(),
       location: $("entryLocation").value.trim(),
-      // Keep legacy fields in the JSON schema without exposing rating controls.
-      energy: existing ? Number(existing.energy) || 0 : 0,
-      mood: existing ? Number(existing.mood) || 0 : 0,
+      energy: Number($("energyRating").dataset.value) || 0,
+      mood: Number($("moodRating").dataset.value) || 0,
       note: $("entryNote").value.trim(),
       createdAt: existing ? existing.createdAt : new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1011,7 +1777,7 @@
 
   function makeBackup() {
     return {
-      app: "week168",
+      app: Edition.backup.app,
       version: DATA_VERSION,
       exportedAt: new Date().toISOString(),
       entries: clone(state.entries),
@@ -1028,9 +1794,7 @@
       return { ok: false, message: "文件不是有效的 JSON" };
     }
     if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, message: "备份根结构不正确" };
-    if (!["week168", "168hours"].includes(value.app) || value.version !== DATA_VERSION) {
-      return { ok: false, message: "这不是当前版本支持的 Week 168 备份" };
-    }
+    if (!Edition.backup.accept.includes(value.app) || value.version !== DATA_VERSION) return { ok: false, message: `这不是当前版本导出的 ${Edition.appName} 备份` };
     if (!Array.isArray(value.entries) || !Array.isArray(value.categories) || !value.settings || typeof value.settings !== "object") {
       return { ok: false, message: "备份缺少记录、分类或设置" };
     }
@@ -1140,11 +1904,12 @@
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `Week168备份-${Core.toLocalDateKey(new Date())}.json`;
+      anchor.download = `${Edition.backup.filePrefix}备份-${Core.toLocalDateKey(new Date())}.json`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      rememberBackup();
       showToast("备份已导出");
     } catch (error) {
       showToast("导出失败，请稍后重试");
@@ -1157,7 +1922,7 @@
       return;
     }
     const json = JSON.stringify({
-      app: "week168-recovery",
+      app: Edition.backup.recoveryApp,
       version: 1,
       exportedAt: new Date().toISOString(),
       note: "这是异常本机数据的原始副本，请勿直接作为普通备份导入。",
@@ -1178,7 +1943,7 @@
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `Week168抢救副本-${Core.toLocalDateKey(new Date())}.json`;
+      anchor.download = `${Edition.backup.filePrefix}抢救副本-${Core.toLocalDateKey(new Date())}.json`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -1251,10 +2016,15 @@
   }
 
   function reportShareText() {
-    const stats = Core.weekStats(state.entries, ui.selectedWeek, state.categories);
+    const stats = weekStats(ui.selectedWeek);
     const categories = categoryTotalsSorted(stats).slice(0, 6).map(([id, minutes]) => `· ${categoryById(id).name}：${formatHours(minutes)}`);
+    if (ReportExt) {
+      return ReportExt.shareLines(stats, {
+        formatHours, formatPercentage, categories, weekLabel: formatWeekRange(ui.selectedWeek),
+      }).join("\n");
+    }
     return [
-      `Week 168 · ${formatWeekRange(ui.selectedWeek)}`,
+      `${Edition.appName} · ${formatWeekRange(ui.selectedWeek)}`,
       `已记录 ${formatHours(stats.trackedMinutes)}，待补 ${formatHours(stats.untrackedMinutes)}`,
       `工作/学习：${formatHours(stats.workStudyMinutes)}`,
       `生活事务：${formatHours(stats.lifeMinutes)}`,
@@ -1271,7 +2041,7 @@
       try { bridge.shareText(text); return; } catch (error) { /* Browser fallback below. */ }
     }
     if (navigator.share) {
-      try { await navigator.share({ title: "Week 168", text }); return; } catch (error) {
+      try { await navigator.share({ title: Edition.appName, text }); return; } catch (error) {
         if (error && error.name === "AbortError") return;
       }
     }
@@ -1486,7 +2256,7 @@
     if (timelineDrag && event.pointerId === timelineDrag.pointerId) cancelTimelineDrag();
   }
 
-  function handleAction(action, target) {
+  function handleAction(action, target, event) {
     switch (action) {
       case "go-today": goCurrentWeek(true); break;
       case "go-current-week": goCurrentWeek(false); break;
@@ -1506,12 +2276,33 @@
         renderToday();
         break;
       case "new-entry": openEntry(); break;
+      case "open-ai-import": openAiImport(); break;
+      case "close-ai-import": closeAiImport(); break;
+      case "go-ai-settings": closeAiImport(); navigate("settings"); newAiProfile(); break;
+      case "analyze-text": analyzeDayText(); break;
+      case "save-ai-drafts": saveAiDrafts(); break;
+      case "add-unresolved": addUnresolved(Number(target.dataset.index)); break;
       case "new-at":
         if (ui.suppressNextClick) break;
         ui.selectedDate = target.dataset.date || ui.selectedDate;
         ui.selectedWeek = Core.weekKey(Core.fromLocalDateKey(ui.selectedDate));
         openEntry({ date: ui.selectedDate, hour: Number(target.dataset.hour) || 0 });
         break;
+      case "fill-gap": {
+        if (ui.suppressNextClick) break;
+        const dayStart = Core.fromLocalDateKey(ui.selectedDate);
+        const gapStart = Number(target.dataset.start) || 0;
+        const gapEnd = Number(target.dataset.end) || gapStart + 60;
+        // A pointer click carries a position; keyboard activation (detail 0) does not.
+        const tapMinute = event && event.detail > 0 ? timelineMinuteAt(event) : NaN;
+        const range = Core.gapPrefillRange(gapStart, gapEnd, tapMinute);
+        openEntry({ defaults: {
+          start: Core.addMinutes(dayStart, range.start),
+          end: Core.addMinutes(dayStart, range.end),
+          categoryId: "", content: "", location: "", energy: 0, mood: 0, note: "",
+        } });
+        break;
+      }
       case "continue-last": continueLastEntry(); break;
       case "edit-entry": openEntry({ id: target.dataset.id }); break;
       case "close-entry": closeEntry(); break;
@@ -1521,6 +2312,13 @@
         ui.selectedCategory = target.dataset.id;
         renderCategoryPicker();
         break;
+      case "set-rating": {
+        const root = $(target.dataset.ratingTarget);
+        const value = Number(target.dataset.value) || 0;
+        root.dataset.value = String(Number(root.dataset.value) === value ? 0 : value);
+        renderRatings();
+        break;
+      }
       case "add-category": openCategorySheet(); break;
       case "close-category": closeCategorySheet(); break;
       case "pick-color":
@@ -1533,6 +2331,13 @@
       case "export-recovery": exportRecoveryData(); break;
       case "import-data": requestImport(); break;
       case "clear-data": clearEntries(); break;
+      case "save-ai-profile": saveAiProfile(); break;
+      case "new-ai-profile": newAiProfile(); break;
+      case "close-ai-profile-editor": closeAiProfileEditor(); break;
+      case "edit-ai-profile": editAiProfile(target.dataset.id); break;
+      case "delete-ai-profile": deleteAiProfile(target.dataset.id); break;
+      case "activate-ai-profile": activateAiProfile(target.dataset.id); break;
+      case "test-ai-profile": testAiProfile(target.dataset.id); break;
       case "open-history-week":
         setSelectedWeek(Core.fromLocalDateKey(target.dataset.week));
         navigate("week");
@@ -1565,7 +2370,7 @@
       return;
     }
     const actionTarget = event.target.closest("[data-action]");
-    if (actionTarget) handleAction(actionTarget.dataset.action, actionTarget);
+    if (actionTarget) handleAction(actionTarget.dataset.action, actionTarget, event);
   }
 
   function onFileSelected(event) {
@@ -1583,6 +2388,7 @@
 
   function activeSheet() {
     if (!$("categorySheet").classList.contains("hidden")) return $("categorySheet");
+    if (!$("aiSheet").classList.contains("hidden")) return $("aiSheet");
     if (!$("entrySheet").classList.contains("hidden")) return $("entrySheet");
     return null;
   }
@@ -1598,10 +2404,17 @@
 
   function onDocumentKeydown(event) {
     const sheet = activeSheet();
-    if (!sheet) return;
+    if (!sheet) {
+      if (event.key === "Escape" && ui.view === "settings" && ui.aiEditorOpen) {
+        event.preventDefault();
+        closeAiProfileEditor();
+      }
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault();
       if (sheet.id === "categorySheet") closeCategorySheet();
+      else if (sheet.id === "aiSheet") closeAiImport();
       else closeEntry();
       return;
     }
@@ -1648,6 +2461,21 @@
   }
 
   function installEvents() {
+    const quickPanel = $("quickPanel");
+    // applyEdition() has already hidden the variant this edition does not use.
+    const manualEntry = quickPanel && Array.from(quickPanel.querySelectorAll('[data-action="new-entry"]'))
+      .find((button) => !button.hidden);
+    if (manualEntry && typeof window.IntersectionObserver === "function") {
+      const topBarHeight = Math.ceil(document.querySelector(".topbar").getBoundingClientRect().height);
+      const navHeight = Math.ceil(document.querySelector(".bottom-nav").getBoundingClientRect().height);
+      const observer = new window.IntersectionObserver((entries) => {
+        ui.quickPanelVisible = entries[0].isIntersecting && entries[0].intersectionRatio >= 0.5;
+        updateFloatingAddVisibility();
+      }, { rootMargin: `-${topBarHeight}px 0px -${navHeight}px 0px`, threshold: 0.5 });
+      observer.observe(manualEntry);
+    } else {
+      ui.quickPanelVisible = false;
+    }
     document.addEventListener("click", onDocumentClick);
     document.addEventListener("keydown", onDocumentKeydown);
     document.addEventListener("visibilitychange", () => {
@@ -1659,7 +2487,14 @@
     window.addEventListener("pageshow", refreshDayBoundary);
     window.addEventListener("focus", refreshDayBoundary);
     $("entryBackdrop").addEventListener("click", closeEntry);
+    $("aiBackdrop").addEventListener("click", closeAiImport);
     $("categoryBackdrop").addEventListener("click", closeCategorySheet);
+    $("aiDraftList").addEventListener("input", onAiDraftChange);
+    $("aiDraftList").addEventListener("change", onAiDraftChange);
+    ["aiDate", "aiText"].forEach((id) => $(id).addEventListener("input", () => {
+      clearAiResult();
+      storeAiDraftText();
+    }));
     $("entryForm").addEventListener("submit", (event) => event.preventDefault());
     ["entryDate", "entryStart", "entryEnd"].forEach((id) => $(id).addEventListener("input", updateDurationHelper));
     $("newCategoryName").addEventListener("keydown", (event) => {
@@ -1679,6 +2514,16 @@
       choices[next].click();
     });
     $("reminderEnabled").addEventListener("change", (event) => setReminder(event.target.checked));
+    $("aiProvider").addEventListener("change", onAiProviderChange);
+    $("aiEndpoint").addEventListener("input", updateAiProviderView);
+    $("aiModelSelect").addEventListener("change", onAiSettingsModelChange);
+    $("aiImportProfile").addEventListener("change", () => {
+      renderAiImportModels();
+      clearAiResult();
+    });
+    $("aiImportModel").addEventListener("change", onAiImportModelChange);
+    $("aiImportCustomModel").addEventListener("input", () => { updateAiRecognitionSummary(); clearAiResult(); });
+    $("aiDeepThinking").addEventListener("change", updateAiRecognitionSummary);
     $("reminderTime").addEventListener("change", (event) => {
       const value = event.target.value;
       if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) {
@@ -1702,11 +2547,14 @@
     canvas.addEventListener("pointerup", onTimelinePointerUp, { passive: false });
     canvas.addEventListener("pointercancel", onTimelinePointerCancel);
     window.addEventListener("android-import-complete", (event) => receiveImportedData(event.detail));
+    window.addEventListener("android-ai-result", (event) => receiveAiResult(event.detail));
+    window.addEventListener("android-ai-profile-test", (event) => receiveAiProfileTest(event.detail));
     window.addEventListener("android-import-error", () => showToast("无法读取备份，原数据没有变化"));
     window.addEventListener("android-export-complete", () => {
       const recoveryExport = ui.recoveryExportPending;
       ui.recoveryExportPending = false;
       if (recoveryExport) recoveryProtected = true;
+      else rememberBackup();
       showToast(recoveryExport ? "原始抢救副本已保存" : "备份已保存");
     });
     window.addEventListener("android-export-error", () => {
@@ -1720,6 +2568,7 @@
       showToast(recoveryExport ? "已取消抢救副本导出" : "已取消导出");
     });
     window.addEventListener("android-reminder-updated", (event) => updateReminderFromAndroid(event.detail));
+    window.addEventListener("android-system-theme", () => { if (state.settings.theme === "system") applyTheme(); });
     window.addEventListener("android-reminder-permission", (event) => {
       if (String(event.detail) === "denied") {
         state.settings.reminderEnabled = false;
@@ -1741,12 +2590,20 @@
       closeCategorySheet();
       return true;
     }
+    if (!$("aiSheet").classList.contains("hidden")) {
+      closeAiImport();
+      return true;
+    }
     if (!$("entrySheet").classList.contains("hidden")) {
       closeEntry();
       return true;
     }
     if (ui.rangeSelectMode) {
       setRangeSelectMode(false, false);
+      return true;
+    }
+    if (ui.view === "settings" && ui.aiEditorOpen) {
+      closeAiProfileEditor();
       return true;
     }
     if (ui.view !== "today") {
@@ -1760,7 +2617,64 @@
     return false;
   };
 
+  // One markup serves every edition: hide what this edition does not ship and
+  // fill in its name and wording. Hidden controls keep their ids, so shared
+  // code paths never meet a missing element.
+  function applyEdition() {
+    document.title = Edition.appName;
+    all("[data-feature]").forEach((element) => {
+      if (!FEATURES[element.dataset.feature]) element.hidden = true;
+    });
+    all("[data-feature-off]").forEach((element) => {
+      if (FEATURES[element.dataset.featureOff]) element.hidden = true;
+    });
+    const reportSlot = $("editionReportSlot");
+    if (ReportExt && reportSlot) {
+      reportSlot.innerHTML = ReportExt.markup;
+      all("[data-default-report]").forEach((element) => { element.hidden = true; });
+    }
+    // Daily reminders need the Android shell; the web build explains instead.
+    const native = Boolean(nativeBridge());
+    all("[data-native-only]").forEach((element) => { if (!native) element.hidden = true; });
+    all("[data-web-only]").forEach((element) => { if (native) element.hidden = true; });
+    all("[data-edition-name]").forEach((element) => { element.textContent = Edition.appName; });
+    all("[data-edition-version]").forEach((element) => { element.textContent = `v${Edition.version}`; });
+    all("[data-edition-text]").forEach((element) => {
+      const value = Edition.text[element.dataset.editionText];
+      if (typeof value === "string") element.textContent = value;
+    });
+    all("[data-edition-placeholder]").forEach((element) => {
+      const value = Edition.text[element.dataset.editionPlaceholder];
+      if (typeof value === "string") element.placeholder = value;
+    });
+  }
+
+  function rememberBackup() {
+    try { localStorage.setItem(LAST_BACKUP_KEY, new Date().toISOString()); } catch (error) { /* Optional. */ }
+  }
+
+  // In a plain browser the records live only in this origin's storage, which
+  // the browser may evict. Ask for persistent storage and, at most once a
+  // day, nudge towards an export when the last one is old or missing.
+  function protectWebStorage() {
+    if (nativeBridge()) return;
+    const storage = navigator.storage;
+    if (storage && typeof storage.persist === "function" && typeof storage.persisted === "function") {
+      storage.persisted().then((granted) => granted || storage.persist()).catch(() => {});
+    }
+    if (!state.entries.length || startupWarning) return;
+    try {
+      const today = Core.toLocalDateKey(new Date());
+      if (localStorage.getItem(LAST_NUDGE_KEY) === today) return;
+      const last = Date.parse(localStorage.getItem(LAST_BACKUP_KEY) || "");
+      if (Number.isFinite(last) && Date.now() - last < BACKUP_NUDGE_DAYS * 86400000) return;
+      localStorage.setItem(LAST_NUDGE_KEY, today);
+      window.requestAnimationFrame(() => showToast("网页版记录只在这个浏览器里，记得到设置里导出备份"));
+    } catch (error) { /* Storage unavailable: the settings note still explains. */ }
+  }
+
   function init() {
+    applyEdition();
     installEvents();
     readNativeReminderState();
     if (needsInitialPersist) {
@@ -1770,6 +2684,7 @@
     applyTheme();
     renderAll();
     scheduleDayBoundaryRefresh();
+    protectWebStorage();
     if (startupWarning) window.requestAnimationFrame(() => showToast(startupWarning));
     const media = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
     if (media) {

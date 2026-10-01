@@ -6,7 +6,7 @@
 
 通用版以简体中文为主，支持 Android 8.0（API 26）及以上系统，包名为 `io.github.napoleoncqf.week168`。GitHub Releases 目前提供通用版 v1.0.0。
 
-官网另有个人版「168小时」，包名为 `com.one68hours.app`。两版独立安装，不能互相覆盖升级，记录也不会自动迁移。下方源码说明和预览截图对应通用版 v1.0.0。
+官网另有个人版「168小时」，包名为 `com.one68hours.app`。两版独立安装，不能互相覆盖升级，记录也不会自动迁移。预览截图对应通用版 v1.0.0；`main` 分支源码已更新到 1.1.0（尚未发布 APK，变化见 [CHANGELOG](CHANGELOG.md)）。
 
 ## 官网个人版「168小时」下载
 
@@ -45,12 +45,14 @@
 - 在线地址：<https://napoleoncqf.github.io/week168/>（启用 GitHub Pages 后可用）
 - 首次打开后会缓存全部文件，之后断网也能使用
 - 记录只保存在当前浏览器的本地存储里，和 Android 版数据互不相通；可通过“设置 → 备份与恢复”导出、导入 JSON 来迁移
-- 网页版没有每日提醒
+- 网页版会向浏览器申请持久存储，但浏览器仍可能在清理网站数据时删除记录；超过 14 天没导出备份时，打开页面会每天最多提醒一次
+- 网页版没有每日提醒（设置页不显示提醒开关）
+- 发布新版本后，页面会在新缓存就绪时自动刷新一次
 
 本地构建：
 
 ```bash
-node scripts/build-web.mjs        # 输出到 dist-web/
+node scripts/build-web.mjs dist-web   # 按 editions/general.json 输出到 dist-web/
 cd dist-web && python3 -m http.server 8080
 ```
 
@@ -83,6 +85,7 @@ cd dist-web && python3 -m http.server 8080
 
 - Windows
 - PowerShell 7（`pwsh`）
+- Node.js 22 或更新版本（构建时用它按版本配置生成源码）
 - JDK（建议 JDK 17，并确保 `java`、`javac`、`jar`、`keytool` 可用）
 - Android SDK Platform 36
 - Android SDK Build Tools 35.0.0
@@ -96,8 +99,10 @@ Copy-Item .\signing.example.psd1 .\android\keystore\signing.local.psd1
 编辑 `android\keystore\signing.local.psd1`，把示例密码改为足够长的随机密码。该本机配置和密钥目录已被 `.gitignore` 排除，不要提交到仓库。
 
 ```powershell
-pwsh .\build.ps1 -VersionCode 10000 -VersionName "1.0.0"
+pwsh .\build.ps1 -Edition general
 ```
+
+版本号、包名、默认分类等都来自 `editions/general.json`；需要时可用 `-VersionCode`、`-VersionName` 临时覆盖。构建后可运行 `pwsh .\android\tests\verify-apk.ps1 -Edition general` 检查权限、版本和打包内容。
 
 构建完成后，签名 APK 位于 `release\Week168.apk`。首次构建会生成长期签名密钥；请离线妥善备份密钥、别名和密码。丢失签名密钥后，将无法为已安装用户提供可覆盖安装的更新。
 
@@ -108,9 +113,7 @@ pwsh .\build.ps1 -VersionCode 10000 -VersionName "1.0.0"
 项目测试只依赖 Node.js，无需安装第三方 npm 包：
 
 ```powershell
-node --test tests/core.test.js tests/app-state.test.js tests/ui-layout.test.js
-node --check android/app/src/main/assets/core.js
-node --check android/app/src/main/assets/app.js
+npm test        # 等同于 node --test，自动发现全部 *.test.js（需 Node.js 22+）
 ```
 
 GitHub Actions 会运行上述测试和 JavaScript 语法检查，但不会构建或签名 APK。发行 APK 应在受控的本机环境构建，并作为附件上传到 GitHub Releases。
@@ -119,16 +122,22 @@ GitHub Actions 会运行上述测试和 JavaScript 语法检查，但不会构�
 
 ```text
 Week168/
-├─ android/app/src/main/assets/   # 离线界面与核心逻辑
-├─ android/app/src/main/java/     # Android 原生外壳和提醒
+├─ android/app/src/main/assets/   # 离线界面与核心逻辑（各版本共用）
+├─ android/app/src/main/java/     # Android 原生外壳和提醒（构建时改写为版本包名）
 ├─ android/app/src/main/res/      # Android 资源与安全配置
 ├─ android/tests/                 # APK 验证脚本
+├─ editions/general.json          # 通用版配置：包名、版本、默认分类、功能开关
+├─ scripts/edition.js             # 按版本配置生成 edition.js、清单和 Java
+├─ scripts/build-web.mjs          # PWA 打包
+├─ web/                           # PWA 清单、service worker 与图标
 ├─ tests/                         # Node.js 回归测试
 ├─ docs/images/                   # 使用虚构数据的公开截图
 ├─ build.ps1                      # 本机构建、签名与验证
 ├─ install.ps1                    # 构建并安装到连接的设备
 └─ signing.example.psd1           # 签名配置示例
 ```
+
+本仓库由作者的主仓库按通用版配置同步导出；Issue 和 Pull Request 照常在这里提交，合并后会同步回主仓库。
 
 源码仓库不跟踪 APK、AAB、签名密钥或本机签名配置。通用版安装包通过 GitHub Releases 分发；官网个人版安装包见上方下载入口。
 

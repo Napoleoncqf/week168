@@ -5,8 +5,9 @@ on:
     branches: [main]
     paths:
       - "android/app/src/main/assets/**"
+      - "editions/**"
+      - "scripts/**"
       - "web/**"
-      - "scripts/build-web.mjs"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -32,7 +33,7 @@ jobs:
         with:
           node-version: "22"
       - name: Run tests
-        run: node --test tests/core.test.js tests/app-state.test.js tests/ui-layout.test.js
+        run: node --test
       - name: Build PWA
         run: node scripts/build-web.mjs dist-web
       - uses: actions/configure-pages@v5

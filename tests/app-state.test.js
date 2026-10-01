@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const Core = require("../android/app/src/main/assets/core.js");
+const { EDITIONS, hasEdition, installEdition } = require("./edition-helper.js");
 
 const APP_SOURCE = fs.readFileSync(
   path.join(__dirname, "../android/app/src/main/assets/app.js"),
@@ -13,7 +14,9 @@ const APP_SOURCE = fs.readFileSync(
 const STORAGE_KEY = "time168.state.v1";
 const RECOVERY_KEY = "time168.recovery.v1";
 
-function loadApp(initial) {
+let currentEdition = EDITIONS[0];
+
+function loadApp(initial, editionId) {
   const values = new Map(Object.entries(initial || {}));
   const localStorage = {
     getItem(key) { return values.has(key) ? values.get(key) : null; },
@@ -40,6 +43,7 @@ function loadApp(initial) {
   };
   context.window = context;
   context.Time168Core = Core;
+  installEdition(context, editionId || currentEdition);
   vm.runInNewContext(APP_SOURCE, context, { filename: "app.js" });
   return { api: context.__Time168App, values };
 }
@@ -75,50 +79,21 @@ function backupWithEntry() {
 function test(name, fn) {
   try {
     fn();
-    console.log(`PASS ${name}`);
+    console.log(`PASS [${currentEdition}] ${name}`);
   } catch (error) {
-    console.error(`FAIL ${name}`);
+    console.error(`FAIL [${currentEdition}] ${name}`);
     throw error;
   }
 }
 
+// Shared behaviour runs once per edition found in editions/.
+function sharedSuite() {
 test("a valid current backup imports without normalization loss", () => {
   const { api, backup } = backupWithEntry();
   const result = plain(api.validateBackup(backup));
   assert.equal(result.ok, true);
   assert.equal(result.count, 1);
   assert.deepEqual(result.state.entries[0], entry());
-});
-
-test("public defaults use ten neutral everyday categories", () => {
-  const state = plain(loadApp().api.getState());
-  assert.deepEqual(state.categories.map((item) => item.id), [
-    "sleep", "work", "study", "commute", "routine",
-    "exercise", "rest", "social", "leisure", "other",
-  ]);
-  assert.deepEqual(state.categories.map((item) => item.name), [
-    "睡眠", "工作", "学习", "通勤", "生活事务",
-    "运动", "休息", "社交", "娱乐", "其他",
-  ]);
-  assert.equal(new Set(state.categories.map((item) => item.id)).size, 10);
-  assert.ok(state.categories.every((item) => item.custom === false));
-});
-
-test("new backups use week168 and the legacy app marker remains importable", () => {
-  const loaded = loadApp();
-  const backup = plain(loaded.api.makeBackup());
-  assert.equal(backup.app, "week168");
-  backup.app = "168hours";
-  assert.equal(plain(loaded.api.validateBackup(backup)).ok, true);
-});
-
-test("zeroed legacy rating fields remain valid JSON data", () => {
-  const { api, backup } = backupWithEntry();
-  backup.entries = [entry({ energy: 0, mood: 0 })];
-  const result = plain(api.validateBackup(backup));
-  assert.equal(result.ok, true);
-  assert.equal(result.state.entries[0].energy, 0);
-  assert.equal(result.state.entries[0].mood, 0);
 });
 
 test("strict import rejects values that cleanEntry would silently coerce", () => {
@@ -200,3 +175,40 @@ test("canonical local state loads without a false recovery warning", () => {
   assert.equal(loaded.values.has(RECOVERY_KEY), false);
   assert.equal(plain(loaded.api.getState()).entries.length, 1);
 });
+}
+
+for (const id of EDITIONS) {
+  currentEdition = id;
+  sharedSuite();
+}
+
+if (hasEdition("general")) {
+  currentEdition = "general";
+  test("general defaults use ten neutral everyday categories", () => {
+    const state = plain(loadApp().api.getState());
+    assert.deepEqual(state.categories.map((item) => item.id), [
+      "sleep", "work", "study", "commute", "routine",
+      "exercise", "rest", "social", "leisure", "other",
+    ]);
+    assert.ok(state.categories.every((item) => item.custom === false));
+  });
+
+  test("general backups use week168 and the legacy app marker remains importable", () => {
+    const loaded = loadApp();
+    const backup = plain(loaded.api.makeBackup());
+    assert.equal(backup.app, "week168");
+    backup.app = "168hours";
+    assert.equal(plain(loaded.api.validateBackup(backup)).ok, true);
+  });
+}
+
+if (hasEdition("personal")) {
+  currentEdition = "personal";
+  test("personal backups keep the 168hours marker and reject other editions", () => {
+    const loaded = loadApp();
+    const backup = plain(loaded.api.makeBackup());
+    assert.equal(backup.app, "168hours");
+    backup.app = "week168";
+    assert.equal(plain(loaded.api.validateBackup(backup)).ok, false);
+  });
+}

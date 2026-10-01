@@ -1,4 +1,4 @@
-package io.github.napoleoncqf.week168;
+package com.one68hours.app;
 
 import android.app.AlarmManager;
 import android.app.PendingIntent;
@@ -85,7 +85,7 @@ public final class ReminderScheduler {
 
     private static PendingIntent pendingIntent(Context context) {
         Intent intent = new Intent(context, ReminderReceiver.class);
-        intent.setAction("io.github.napoleoncqf.week168.DAILY_REMINDER");
+        intent.setAction("com.one68hours.app.DAILY_REMINDER");
         return PendingIntent.getBroadcast(
                 context,
                 REQUEST_CODE,

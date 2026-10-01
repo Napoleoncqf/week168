@@ -1,5 +1,7 @@
 ﻿param(
-    [string]$AndroidSdk = "",
+    # 留空：有 editions/personal.json 时构建个人版，否则构建通用版。
+    [string]$Edition = "",
+    [string]$AndroidSdk = "D:\Android\Sdk",
     [string]$Serial = "",
     [switch]$NoLaunch
 )
@@ -14,17 +16,12 @@ function Assert-CommandSucceeded([string]$Step) {
 }
 
 $ProjectRoot = [IO.Path]::GetFullPath($PSScriptRoot)
-if ([string]::IsNullOrWhiteSpace($AndroidSdk)) {
-    $SdkCandidates = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT)
-    if ($env:LOCALAPPDATA) { $SdkCandidates += (Join-Path $env:LOCALAPPDATA "Android\Sdk") }
-    $AndroidSdk = $SdkCandidates | Where-Object {
-        $_ -and (Test-Path -LiteralPath (Join-Path $_ "platform-tools\adb.exe") -PathType Leaf)
-    } | Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace($Edition)) {
+    $Edition = if (Test-Path -LiteralPath (Join-Path $ProjectRoot "editions\personal.json")) { "personal" } else { "general" }
 }
-if ([string]::IsNullOrWhiteSpace($AndroidSdk)) {
-    throw "未找到 Android SDK。请设置 ANDROID_HOME 或通过 -AndroidSdk 指定路径。"
-}
-$ApkPath = Join-Path $ProjectRoot "release\Week168.apk"
+if ($Edition -notmatch "^[a-z][a-z0-9-]{0,30}$") { throw "无效的版本名：$Edition" }
+$EditionConfig = Get-Content -LiteralPath (Join-Path $ProjectRoot "editions\$Edition.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+$ApkPath = Join-Path $ProjectRoot "release\$($EditionConfig.releaseApk)"
 $Adb = Join-Path $AndroidSdk "platform-tools\adb.exe"
 
 if (-not (Test-Path -LiteralPath $Adb -PathType Leaf)) {
@@ -32,7 +29,7 @@ if (-not (Test-Path -LiteralPath $Adb -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $ApkPath -PathType Leaf)) {
     Write-Host "尚无 APK，先执行离线构建。"
-    & (Join-Path $ProjectRoot "build.ps1") -AndroidSdk $AndroidSdk
+    & (Join-Path $ProjectRoot "build.ps1") -Edition $Edition -AndroidSdk $AndroidSdk
     Assert-CommandSucceeded "APK 构建"
 }
 
@@ -55,7 +52,7 @@ Write-Host "安装到设备：$Serial"
 Assert-CommandSucceeded "APK 安装"
 
 if (-not $NoLaunch) {
-    & $Adb -s $Serial shell am start -n "io.github.napoleoncqf.week168/.MainActivity"
+    & $Adb -s $Serial shell am start -n "$($EditionConfig.packageName)/.MainActivity"
     Assert-CommandSucceeded "应用启动"
 }
 

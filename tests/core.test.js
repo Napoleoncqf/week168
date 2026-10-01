@@ -200,7 +200,7 @@ run("week boundaries clip records without losing duration", () => {
   assert.equal(stats.dayMinutes[6], 30);
 });
 
-run("generic weekly groups aggregate the public categories", () => {
+run("generic weekly groups aggregate the neutral categories", () => {
   const entries = [
     entry("work", "2026-08-31", "09:00", "11:00", "work"),
     entry("study", "2026-08-31", "11:00", "12:00", "study"),
@@ -218,6 +218,19 @@ run("generic weekly groups aggregate the public categories", () => {
   assert.equal(stats.untrackedMinutes, Core.WEEK_MINUTES - 600);
 });
 
+run("low mood is not low-quality consumption", () => {
+  const entries = [
+    entry("phone", "2026-08-31", "09:00", "10:00", "phone"),
+    entry("low", "2026-08-31", "10:00", "12:00", "low"),
+  ];
+  const categories = [
+    { id: "phone", lowQuality: true },
+    { id: "low" },
+  ];
+  const stats = Core.weekStats(entries, local("2026-08-31", "12:00"), categories);
+  assert.equal(stats.lowQualityMinutes, 60);
+});
+
 run("prototype-like category ids cannot corrupt core totals", () => {
   const strange = entry("safe", "2026-08-31", "09:00", "10:00", "__proto__");
   const stats = Core.weekStats([strange], local("2026-08-31", "12:00"), []);
@@ -229,11 +242,18 @@ run("prototype-like category ids cannot corrupt core totals", () => {
   ), "__proto__");
 });
 
-run("empty weeks return zeroed generic groups", () => {
+run("an empty week reports all 168 hours as untracked", () => {
   const stats = Core.weekStats([], local("2026-08-31", "12:00"), []);
-  assert.equal(stats.workStudyMinutes, 0);
-  assert.equal(stats.lifeMinutes, 0);
-  assert.equal(stats.restLeisureMinutes, 0);
   assert.equal(stats.trackedMinutes, 0);
   assert.equal(stats.untrackedMinutes, Core.WEEK_MINUTES);
+});
+
+run("long gaps prefill only the tapped hour; short gaps stay whole", () => {
+  assert.deepEqual(Core.gapPrefillRange(9 * 60, 11 * 60, 10 * 60 + 20), { start: 540, end: 660 });
+  assert.deepEqual(Core.gapPrefillRange(0, 15 * 60 + 45, 14 * 60 + 30), { start: 840, end: 900 });
+  // Taps near the gap end stay inside the gap.
+  assert.deepEqual(Core.gapPrefillRange(0, 15 * 60 + 45, 15 * 60 + 40), { start: 885, end: 945 });
+  // Keyboard activation has no position and offers the hour closest to now.
+  assert.deepEqual(Core.gapPrefillRange(0, 15 * 60 + 45, NaN), { start: 885, end: 945 });
+  assert.deepEqual(Core.gapPrefillRange(6 * 60, 12 * 60, 3 * 60), { start: 360, end: 420 });
 });

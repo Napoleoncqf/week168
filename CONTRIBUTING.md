@@ -23,10 +23,11 @@
 本地检查命令：
 
 ```powershell
-node --test tests/core.test.js tests/app-state.test.js tests/ui-layout.test.js
-node --check android/app/src/main/assets/core.js
+npm test        # 等同于 node --test（Node.js 22+）
 node --check android/app/src/main/assets/app.js
 ```
+
+界面与逻辑在 `android/app/src/main/assets/` 中由各版本共用，版本差异（包名、默认分类、功能开关）只写在 `editions/*.json`，不要在共用代码里写死某个版本的内容。
 
 ## 设计与实现原则
 

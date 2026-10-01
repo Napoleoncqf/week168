@@ -142,6 +142,20 @@
     return merged;
   }
 
+  const LONG_GAP_MINUTES = 3 * 60;
+
+  // Range to prefill when a "待补" gap is tapped (minutes from day start).
+  // Short gaps are usually one activity, so the whole gap is offered. Long
+  // gaps (e.g. a fully untracked morning) would turn one careless tap into a
+  // 15-hour record, so only the tapped hour is offered; without a tap
+  // position (keyboard), the hour closest to now — the gap's end — is used.
+  function gapPrefillRange(gapStart, gapEnd, tapMinute) {
+    if (gapEnd - gapStart <= LONG_GAP_MINUTES) return { start: gapStart, end: gapEnd };
+    const anchor = Number.isFinite(tapMinute) ? Math.floor(tapMinute / 60) * 60 : gapEnd - 60;
+    const start = Math.max(gapStart, Math.min(anchor, gapEnd - 60));
+    return { start, end: Math.min(gapEnd, start + 60) };
+  }
+
   function subtractIntervals(start, end, blocked) {
     const rangeStart = asDate(start);
     const rangeEnd = asDate(end);
@@ -370,6 +384,10 @@
     const totals = Object.create(null);
     const intervals = [];
     const dayMinutes = Array(7).fill(0);
+    let energyWeighted = 0;
+    let energyMinutes = 0;
+    let moodWeighted = 0;
+    let moodMinutes = 0;
 
     relevant.forEach((entry) => {
       const start = new Date(Math.max(new Date(entry.start), range.start));
@@ -378,6 +396,14 @@
       if (!minutes) return;
       totals[entry.categoryId] = (totals[entry.categoryId] || 0) + minutes;
       intervals.push({ start, end });
+      if (entry.energy) {
+        energyWeighted += entry.energy * minutes;
+        energyMinutes += minutes;
+      }
+      if (entry.mood) {
+        moodWeighted += entry.mood * minutes;
+        moodMinutes += minutes;
+      }
       for (let day = 0; day < 7; day += 1) {
         const dayStart = addDays(range.start, day);
         const dayEnd = addDays(dayStart, 1);
@@ -401,6 +427,12 @@
       trackedMinutes,
       untrackedMinutes: Math.max(0, WEEK_MINUTES - trackedMinutes),
       sleepMinutes: sumIds(idsWithFlag("sleep").length ? idsWithFlag("sleep") : ["sleep"]),
+      // Low mood is observed separately and must never be framed as
+      // low-quality consumption.
+      lowQualityMinutes: sumIds(idsWithFlag("lowQuality").length ? idsWithFlag("lowQuality") : ["phone"]),
+      energyAverage: energyMinutes ? energyWeighted / energyMinutes : null,
+      moodAverage: moodMinutes ? moodWeighted / moodMinutes : null,
+      // General-edition dimensions; unknown ids simply contribute zero.
       workStudyMinutes: sumIds(["work", "study"]),
       lifeMinutes: sumIds(["commute", "routine"]),
       restLeisureMinutes: sumIds(["rest", "leisure"]),
@@ -486,6 +518,7 @@
     overlapMinutes,
     mergeIntervals,
     subtractIntervals,
+    gapPrefillRange,
     makeId,
     isValidEntry,
     cleanEntry,

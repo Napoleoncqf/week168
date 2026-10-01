@@ -23,9 +23,11 @@ jobs:
           node-version: "22"
 
       - name: Run tests
-        run: node --test tests/core.test.js tests/app-state.test.js tests/ui-layout.test.js
+        run: node --test
 
       - name: Check JavaScript syntax
         run: |
           node --check android/app/src/main/assets/core.js
           node --check android/app/src/main/assets/app.js
+          node --check android/app/src/main/assets/text-import.js
+          node --check scripts/edition.js

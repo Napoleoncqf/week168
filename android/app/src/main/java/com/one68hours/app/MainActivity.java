@@ -1,4 +1,4 @@
-package io.github.napoleoncqf.week168;
+package com.one68hours.app;
 
 import android.Manifest;
 import android.app.Activity;
@@ -66,6 +66,7 @@ public final class MainActivity extends Activity {
 
     private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private AiImportService aiImportService;
     private FrameLayout webContainer;
     private WebView webView;
     private boolean exportPending;
@@ -85,6 +86,9 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Editions without text recognition never create the service; their
+        // manifest also omits INTERNET, so no request can leave the device.
+        aiImportService = Edition.AI_IMPORT ? new AiImportService(this) : null;
         if (savedInstanceState == null) {
             clearPendingExport();
         } else {
@@ -94,7 +98,7 @@ public final class MainActivity extends Activity {
         importPending = importCacheFile().isFile()
                 && (savedInstanceState == null
                 || savedInstanceState.getBoolean(STATE_IMPORT_PENDING, true));
-        configureSystemBars(false);
+        configureSystemBars(isSystemDark());
         NotificationHelper.ensureChannel(this);
         createWebView();
         webView.loadUrl(START_URL);
@@ -117,6 +121,14 @@ public final class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 35 && webContainer != null) {
             webContainer.requestApplyInsets();
         }
+        // uiMode is handled in place, so the light AppTheme keeps the WebView's
+        // prefers-color-scheme at "light"; tell the page about the system theme.
+        emitStringEvent("android-system-theme", isSystemDark() ? "dark" : "light");
+    }
+
+    private boolean isSystemDark() {
+        return (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+                == Configuration.UI_MODE_NIGHT_YES;
     }
 
     private void configureSystemBars(boolean dark) {
@@ -145,7 +157,9 @@ public final class MainActivity extends Activity {
     @SuppressWarnings("SetJavaScriptEnabled")
     private void createWebView() {
         webView = new WebView(this);
-        webView.setBackgroundColor(Color.rgb(247, 248, 244));
+        webView.setBackgroundColor(darkSystemTheme
+                ? Color.rgb(16, 22, 19)
+                : Color.rgb(247, 248, 244));
         webView.setWebChromeClient(new WebChromeClient());
         webView.setWebViewClient(new OfflineWebViewClient());
         webView.addJavascriptInterface(new NativeBridge(), "AndroidBridge");
@@ -740,6 +754,29 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private static final String AI_DISABLED = "{\"ok\":false,\"message\":\"当前版本未启用文字识别\"}";
+
+    private void emitAiDisabled(String eventName, String requestId) {
+        final String payload = aiEventPayload(requestId, AI_DISABLED);
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (!destroyed) emitStringEvent(eventName, payload);
+            }
+        });
+    }
+
+    private static String aiEventPayload(String requestId, String result) {
+        try {
+            return new JSONObject()
+                    .put("requestId", requestId)
+                    .put("result", new JSONObject(result))
+                    .toString();
+        } catch (JSONException ignored) {
+            return "{}";
+        }
+    }
+
     private void emitStringEvent(String eventName, String value) {
         if (webView == null) {
             return;
@@ -839,7 +876,7 @@ public final class MainActivity extends Activity {
 
     private String defaultBackupName() {
         String date = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(new Date());
-        return "Week168_" + date + ".json";
+        return Edition.BACKUP_FILE_PREFIX + date + ".json";
     }
 
     private boolean isAssetUrl(String url) {
@@ -876,6 +913,96 @@ public final class MainActivity extends Activity {
     }
 
     public final class NativeBridge {
+        @JavascriptInterface
+        public String getAiProfiles() {
+            return aiImportService == null ? AI_DISABLED : aiImportService.getProfiles();
+        }
+
+        @JavascriptInterface
+        public String saveAiProfile(String id, String name, String endpoint, String model, String token) {
+            return aiImportService == null ? AI_DISABLED
+                    : aiImportService.saveProfile(id, name, endpoint, model, token);
+        }
+
+        @JavascriptInterface
+        public String deleteAiProfile(String id) {
+            return aiImportService == null ? AI_DISABLED : aiImportService.removeProfile(id);
+        }
+
+        @JavascriptInterface
+        public String activateAiProfile(String id) {
+            return aiImportService == null ? AI_DISABLED : aiImportService.activateProfile(id);
+        }
+
+        @JavascriptInterface
+        public void testAiProfile(String id) {
+            if (aiImportService == null) {
+                emitAiDisabled("android-ai-profile-test", id);
+                return;
+            }
+            boolean submitted = submitIo(new Runnable() {
+                @Override
+                public void run() {
+                    String result = aiImportService.testProfile(id);
+                    String payload = aiEventPayload(id, result);
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (!destroyed) emitStringEvent("android-ai-profile-test", payload);
+                        }
+                    });
+                }
+            });
+            if (!submitted) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        emitStringEvent("android-ai-profile-test",
+                                aiEventPayload(id,
+                                        "{\"ok\":false,\"message\":\"暂时无法启动测试\"}"));
+                    }
+                });
+            }
+        }
+
+        @JavascriptInterface
+        public void analyzeDayText(String requestJson) {
+            String suppliedId = "";
+            try {
+                suppliedId = new JSONObject(requestJson).optString("requestId", "");
+            } catch (JSONException ignored) {
+                // The service returns a validation error for malformed input.
+            }
+            final String requestId = suppliedId.length() <= 100 ? suppliedId : "";
+            if (aiImportService == null) {
+                emitAiDisabled("android-ai-result", requestId);
+                return;
+            }
+            boolean submitted = submitIo(new Runnable() {
+                @Override
+                public void run() {
+                    String result = aiImportService.analyze(requestJson);
+                    String eventPayload = aiEventPayload(requestId, result);
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (!destroyed) emitStringEvent("android-ai-result", eventPayload);
+                        }
+                    });
+                }
+            });
+            if (!submitted) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        emitStringEvent("android-ai-result",
+                                aiEventPayload(requestId,
+                                        "{\"ok\":false,\"message\":\"暂时无法启动识别\"}"));
+                    }
+                });
+            }
+        }
+
         @JavascriptInterface
         public void exportData(String json) {
             runOnUiThread(new Runnable() {
@@ -987,6 +1114,11 @@ public final class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public boolean isSystemDark() {
+            return MainActivity.this.isSystemDark();
+        }
+
+        @JavascriptInterface
         public void setSystemTheme(boolean dark) {
             runOnUiThread(new Runnable() {
                 @Override
@@ -1032,9 +1164,16 @@ public final class MainActivity extends Activity {
                             int handledTypes = android.view.WindowInsets.Type.systemBars()
                                     | android.view.WindowInsets.Type.displayCutout();
                             android.graphics.Insets bars = insets.getInsets(handledTypes);
-                            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+                            // Edge-to-edge windows are not resized for the keyboard, so
+                            // lift the WebView above the IME to keep focused fields and
+                            // the sheet's bottom save button visible.
+                            int imeType = android.view.WindowInsets.Type.ime();
+                            android.graphics.Insets ime = insets.getInsets(imeType);
+                            view.setPadding(bars.left, bars.top, bars.right,
+                                    Math.max(bars.bottom, ime.bottom));
                             return new android.view.WindowInsets.Builder(insets)
                                     .setInsets(handledTypes, android.graphics.Insets.NONE)
+                                    .setInsets(imeType, android.graphics.Insets.NONE)
                                     .build();
                         }
                     }

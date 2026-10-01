@@ -1,0 +1,12 @@
+{
+  "name": "week168",
+  "private": true,
+  "description": "168 小时 / Week 168 时间记录：一份源码，按 editions/ 构建个人版与通用版。无第三方依赖。",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test",
+    "build:web": "node scripts/build-web.mjs dist-web"
+  }
+}

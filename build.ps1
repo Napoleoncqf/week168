@@ -1,9 +1,11 @@
-﻿param(
+param(
+    # 留空：有 editions/personal.json 时构建个人版，否则构建通用版。
+    [string]$Edition = "",
     [string]$AndroidSdk = "",
     [string]$BuildToolsVersion = "35.0.0",
-    [string]$PlatformVersion = "android-36",
-    [int]$VersionCode = 10000,
-    [string]$VersionName = "1.0.0",
+    [string]$PlatformVersion = "",
+    [int]$VersionCode = 0,
+    [string]$VersionName = "",
     [string]$SigningConfig = ""
 )
 
@@ -84,17 +86,24 @@ if ([string]::IsNullOrWhiteSpace($VersionName)) {
     throw "VersionName 不能为空"
 }
 $AndroidRoot = [IO.Path]::GetFullPath((Join-Path $ProjectRoot "android"))
-$SourceRoot = Join-Path $AndroidRoot "app\src\main"
-$ManifestPath = Join-Path $SourceRoot "AndroidManifest.xml"
-$ResourceRoot = Join-Path $SourceRoot "res"
-$AssetRoot = Join-Path $SourceRoot "assets"
-$JavaSourceRoot = Join-Path $SourceRoot "java"
 $BuildRoot = [IO.Path]::GetFullPath((Join-Path $AndroidRoot "build"))
+# 源码只有一份；scripts/edition.js 按版本配置生成清单、资源、assets 和改写包名后的 Java。
+$StageRoot = Join-Path $BuildRoot "stage"
+$ManifestPath = Join-Path $StageRoot "AndroidManifest.xml"
+$ResourceRoot = Join-Path $StageRoot "res"
+$AssetRoot = Join-Path $StageRoot "assets"
+$JavaSourceRoot = Join-Path $StageRoot "java"
 $DistRoot = Join-Path $AndroidRoot "dist"
 $ReleaseRoot = Join-Path $ProjectRoot "release"
-$KeystorePath = $Week168KeystorePath
+$KeystorePath = $SigningKeystorePath
+$RealPrefix = $DisplayProjectRoot.TrimEnd("\") + "\"
+if ($KeystorePath.StartsWith($RealPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    # 项目内的密钥也走 ASCII 盘符，避免 Java 工具处理中文路径。
+    $KeystorePath = Join-Path $ProjectRoot $KeystorePath.Substring($RealPrefix.Length)
+}
 $KeystoreRoot = Split-Path -Parent $KeystorePath
-$FinalReleaseApk = Join-Path $ReleaseRoot "Week168.apk"
+$ReleaseApkName = [string]$EditionConfig.releaseApk
+$FinalReleaseApk = Join-Path $ReleaseRoot $ReleaseApkName
 
 if (-not $BuildRoot.StartsWith($AndroidRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw "构建目录安全检查失败：$BuildRoot"
@@ -107,17 +116,13 @@ $D8 = Join-Path $BuildToolsRoot "d8.bat"
 $Zipalign = Join-Path $BuildToolsRoot "zipalign.exe"
 $Apksigner = Join-Path $BuildToolsRoot "apksigner.bat"
 
-Require-File $ManifestPath "AndroidManifest.xml"
-Require-File (Join-Path $AssetRoot "index.html") "前端入口 index.html"
-Require-File (Join-Path $AssetRoot "app.js") "前端交互 app.js"
-Require-File (Join-Path $AssetRoot "core.js") "前端数据逻辑 core.js"
-Require-File (Join-Path $AssetRoot "styles.css") "前端样式 styles.css"
 Require-File $AndroidJar "Android 平台库"
 Require-File $Aapt2 "aapt2"
 Require-File $D8 "d8"
 Require-File $Zipalign "zipalign"
 Require-File $Apksigner "apksigner"
 
+$Node = (Get-Command node -ErrorAction Stop).Source
 $Javac = (Get-Command javac -ErrorAction Stop).Source
 $Jar = (Get-Command jar -ErrorAction Stop).Source
 $Keytool = (Get-Command keytool -ErrorAction Stop).Source
@@ -142,9 +147,17 @@ $ClassesJar = Join-Path $BuildRoot "classes.jar"
 $DexRoot = Join-Path $BuildRoot "dex"
 $ResourceApk = Join-Path $BuildRoot "resources-unsigned.apk"
 $AlignedApk = Join-Path $BuildRoot "aligned-unsigned.apk"
-$OutputApk = Join-Path $DistRoot "Week168.apk"
+$OutputApk = Join-Path $DistRoot $ReleaseApkName
 
 New-Item -ItemType Directory -Force -Path $GeneratedRoot, $ClassesRoot, $DexRoot | Out-Null
+
+Write-Host "[0/7] 生成 $Edition 版本源码"
+& $Node (Join-Path $ProjectRoot "scripts\edition.js") stage $Edition $StageRoot
+Assert-CommandSucceeded "版本源码生成"
+Require-File $ManifestPath "AndroidManifest.xml"
+foreach ($AssetName in @("index.html", "app.js", "core.js", "styles.css", "edition.js")) {
+    Require-File (Join-Path $AssetRoot $AssetName) "前端文件 $AssetName"
+}
 
 Write-Host "[1/7] 编译 Android 资源"
 & $Aapt2 compile --dir $ResourceRoot -o $CompiledResources
@@ -158,7 +171,7 @@ Write-Host "[2/7] 打包清单、资源与离线页面"
     --java $GeneratedRoot `
     -A $AssetRoot `
     --min-sdk-version 26 `
-    --target-sdk-version 36 `
+    --target-sdk-version ([int]$EditionConfig.targetSdk) `
     --version-code $VersionCode `
     --version-name $VersionName `
     --auto-add-overlay `
@@ -198,27 +211,27 @@ Assert-CommandSucceeded "APK 对齐"
 if (-not (Test-Path -LiteralPath $KeystorePath -PathType Leaf)) {
     if ((Test-Path -LiteralPath $FinalReleaseApk -PathType Leaf) -or
         (Test-Path -LiteralPath $OutputApk -PathType Leaf)) {
-        throw "发现既有发行 APK，但公开版签名密钥缺失。为避免生成无法覆盖安装的新签名，构建已停止。请恢复本机签名文件。"
+        throw "发现既有发行 APK，但长期签名密钥缺失。为避免生成无法覆盖安装的新签名，构建已停止。请恢复 $KeystorePath。"
     }
     Write-Host "[6/7] 首次生成本机长期签名密钥"
     & $Keytool `
         -genkeypair `
         -keystore $KeystorePath `
         -storetype JKS `
-        -storepass $Week168StorePassword `
-        -keypass $Week168KeyPassword `
-        -alias $Week168SigningAlias `
+        -storepass $SigningStorePassword `
+        -keypass $SigningKeyPassword `
+        -alias $SigningAlias `
         -keyalg RSA `
         -keysize 2048 `
         -validity 10000 `
-        -dname "CN=Week168 Release, OU=Open Source, O=Week168" `
+        -dname "CN=$($EditionConfig.appName) Release, OU=Local, O=Week168" `
         -noprompt
     Assert-CommandSucceeded "签名密钥生成"
 } else {
     Write-Host "[6/7] 使用现有长期签名密钥"
 }
 
-$KeystoreSignerDigest = Get-KeystoreSignerDigest $Keytool $KeystorePath $Week168StorePassword $Week168SigningAlias
+$KeystoreSignerDigest = Get-KeystoreSignerDigest $Keytool $KeystorePath $SigningStorePassword $SigningAlias
 $ExistingReleaseSignerDigest = $null
 if (Test-Path -LiteralPath $FinalReleaseApk -PathType Leaf) {
     $ExistingReleaseSignerDigest = Get-ApkSignerDigest $Apksigner $FinalReleaseApk
@@ -235,9 +248,9 @@ if (Test-Path -LiteralPath $OutputApk) {
 }
 & $Apksigner sign `
     --ks $KeystorePath `
-    --ks-key-alias $Week168SigningAlias `
-    --ks-pass "pass:$Week168StorePassword" `
-    --key-pass "pass:$Week168KeyPassword" `
+    --ks-key-alias $SigningAlias `
+    --ks-pass "pass:$SigningStorePassword" `
+    --key-pass "pass:$SigningKeyPassword" `
     --v1-signing-enabled true `
     --v2-signing-enabled true `
     --v3-signing-enabled true `
@@ -257,7 +270,7 @@ if ($null -ne $ExistingReleaseSignerDigest -and
 }
 
 Write-Host "发布最终 APK（原子替换）"
-$ReleaseTempApk = Join-Path $ReleaseRoot "Week168.apk.tmp"
+$ReleaseTempApk = Join-Path $ReleaseRoot "$ReleaseApkName.tmp"
 if (Test-Path -LiteralPath $ReleaseTempApk) {
     Remove-Item -LiteralPath $ReleaseTempApk -Force
 }
@@ -279,10 +292,12 @@ if ($FinalSignerDigest -ne $KeystoreSignerDigest) {
 Assert-CommandSucceeded "最终发行 APK 清单验证"
 
 $Hash = (Get-FileHash -LiteralPath $FinalReleaseApk -Algorithm SHA256).Hash
+$ChecksumPath = Join-Path $ReleaseRoot "$ReleaseApkName.sha256"
+[IO.File]::WriteAllText($ChecksumPath, "$Hash *$ReleaseApkName`n", [Text.UTF8Encoding]::new($false))
 $SizeMb = [Math]::Round((Get-Item -LiteralPath $FinalReleaseApk).Length / 1MB, 2)
-$DisplayOutputApk = Join-Path $DisplayProjectRoot "release\Week168.apk"
+$DisplayOutputApk = Join-Path $DisplayProjectRoot "release\$ReleaseApkName"
 Write-Host ""
-Write-Host "构建完成：$DisplayOutputApk"
+Write-Host "构建完成（$Edition）：$DisplayOutputApk"
 Write-Host "大小：$SizeMb MB"
 Write-Host "SHA-256：$Hash"
 Write-Host "签名证书 SHA-256：$FinalSignerDigest"
@@ -292,8 +307,19 @@ Write-Host "签名证书 SHA-256：$FinalSignerDigest"
 # 一个仅含 ASCII 的盘符；所有源文件和产物仍然位于原项目目录中。
 $RealProjectRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 
+if ([string]::IsNullOrWhiteSpace($Edition)) {
+    $Edition = if (Test-Path -LiteralPath (Join-Path $RealProjectRoot "editions\personal.json")) { "personal" } else { "general" }
+}
+if ($Edition -notmatch "^[a-z][a-z0-9-]{0,30}$") { throw "无效的版本名：$Edition" }
+$EditionPath = Join-Path $RealProjectRoot "editions\$Edition.json"
+Require-File $EditionPath "版本配置"
+$EditionConfig = Get-Content -LiteralPath $EditionPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($VersionCode -eq 0) { $VersionCode = [int]$EditionConfig.versionCode }
+if ([string]::IsNullOrWhiteSpace($VersionName)) { $VersionName = [string]$EditionConfig.versionName }
+if ([string]::IsNullOrWhiteSpace($PlatformVersion)) { $PlatformVersion = [string]$EditionConfig.platform }
+
 if ([string]::IsNullOrWhiteSpace($AndroidSdk)) {
-    $SdkCandidates = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT)
+    $SdkCandidates = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT, "D:\Android\Sdk")
     if ($env:LOCALAPPDATA) { $SdkCandidates += (Join-Path $env:LOCALAPPDATA "Android\Sdk") }
     $AndroidSdk = $SdkCandidates | Where-Object {
         $_ -and (Test-Path -LiteralPath (Join-Path $_ "platforms\$PlatformVersion\android.jar") -PathType Leaf)
@@ -304,8 +330,9 @@ if ([string]::IsNullOrWhiteSpace($AndroidSdk)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($SigningConfig)) {
-    $SigningConfig = Join-Path $RealProjectRoot "android\keystore\signing.local.psd1"
-} elseif (-not [IO.Path]::IsPathRooted($SigningConfig)) {
+    $SigningConfig = [string]$EditionConfig.signingConfig
+}
+if (-not [IO.Path]::IsPathRooted($SigningConfig)) {
     $SigningConfig = Join-Path $RealProjectRoot $SigningConfig
 }
 Require-File $SigningConfig "本机签名配置（参考 signing.example.psd1）"
@@ -316,14 +343,14 @@ foreach ($RequiredKey in @("KeystorePath", "Alias", "StorePassword", "KeyPasswor
         throw "本机签名配置缺少 $RequiredKey"
     }
 }
-$Week168KeystorePath = [string]$SigningSettings.KeystorePath
-if (-not [IO.Path]::IsPathRooted($Week168KeystorePath)) {
-    $Week168KeystorePath = Join-Path $RealProjectRoot $Week168KeystorePath
+$SigningKeystorePath = [string]$SigningSettings.KeystorePath
+if (-not [IO.Path]::IsPathRooted($SigningKeystorePath)) {
+    $SigningKeystorePath = Join-Path $RealProjectRoot $SigningKeystorePath
 }
-$Week168KeystorePath = [IO.Path]::GetFullPath($Week168KeystorePath)
-$Week168SigningAlias = [string]$SigningSettings.Alias
-$Week168StorePassword = [string]$SigningSettings.StorePassword
-$Week168KeyPassword = [string]$SigningSettings.KeyPassword
+$SigningKeystorePath = [IO.Path]::GetFullPath($SigningKeystorePath)
+$SigningAlias = [string]$SigningSettings.Alias
+$SigningStorePassword = [string]$SigningSettings.StorePassword
+$SigningKeyPassword = [string]$SigningSettings.KeyPassword
 
 $SubstDrive = $null
 foreach ($DriveLetter in @("W", "V", "U", "T", "S", "R")) {
@@ -340,6 +367,7 @@ if ($null -eq $SubstDrive) {
 & subst.exe $SubstDrive $RealProjectRoot
 Assert-CommandSucceeded "创建临时构建盘符"
 try {
+    # 签名路径在映射前已解析为真实路径；映射后仍可直接访问。
     Invoke-OfflineBuild "${SubstDrive}\" $RealProjectRoot
 } finally {
     & subst.exe $SubstDrive /d | Out-Null
