@@ -16,9 +16,22 @@ function fail(message) {
 
 function listEditions() {
   return fs.readdirSync(path.join(ROOT, "editions"))
-    .filter((name) => name.endsWith(".json"))
+    .filter((name) => name.endsWith(".json") && name !== "version.json")
     .map((name) => name.slice(0, -5))
     .sort();
+}
+
+// 所有版本共用一个版本号，只写在 editions/version.json；VersionCode 由它推出
+// （1.2.0 → 10200），不再单独维护，避免两个数字或两个版本对不上。
+function loadVersion() {
+  const file = path.join(ROOT, "editions", "version.json");
+  if (!fs.existsSync(file)) fail("找不到 editions/version.json");
+  const { version } = JSON.parse(fs.readFileSync(file, "utf8"));
+  const match = /^(\d+)\.(\d{1,2})\.(\d{1,2})$/.exec(String(version || ""));
+  if (!match) fail("editions/version.json 的 version 须为 x.y.z，次版本和修订号不超过 99");
+  const [major, minor, patch] = match.slice(1).map(Number);
+  if (major < 1) fail("主版本号至少为 1");
+  return { versionName: version, versionCode: major * 10000 + minor * 100 + patch };
 }
 
 function loadEdition(id) {
@@ -27,11 +40,12 @@ function loadEdition(id) {
   if (!fs.existsSync(file)) fail(`找不到 editions/${id}.json`);
   const edition = JSON.parse(fs.readFileSync(file, "utf8"));
   if (edition.id !== id) fail(`${id}.json 的 id 不一致`);
-  for (const key of ["appName", "launcherName", "packageName", "versionName", "platform", "releaseApk"]) {
+  if ("versionName" in edition || "versionCode" in edition) fail(`${id}.json 不应再写版本号，统一改 editions/version.json`);
+  Object.assign(edition, loadVersion());
+  for (const key of ["appName", "launcherName", "packageName", "platform", "releaseApk"]) {
     if (typeof edition[key] !== "string" || !edition[key].trim()) fail(`${id} 缺少 ${key}`);
   }
   if (!/^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/.test(edition.packageName)) fail(`${id} 的包名无效`);
-  if (!Number.isInteger(edition.versionCode) || edition.versionCode <= 0) fail(`${id} 的 versionCode 无效`);
   if (!Number.isInteger(edition.targetSdk) || edition.targetSdk < 26) fail(`${id} 的 targetSdk 无效`);
   if (edition.reportExtension != null) {
     if (!/^[a-z0-9-]+\/[a-z0-9-]+\.js$/.test(edition.reportExtension)
@@ -140,7 +154,7 @@ function stageAndroid(edition, outDir) {
 
 module.exports = {
   ROOT, SOURCE, CANONICAL_PACKAGE,
-  listEditions, loadEdition, browserEdition, editionScript, editionJava, copyTree,
+  listEditions, loadEdition, loadVersion, browserEdition, editionScript, editionJava, copyTree,
   renderManifest, stageAssets, stageAndroid,
 };
 

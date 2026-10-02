@@ -3,8 +3,6 @@
   "appName": "Week 168",
   "launcherName": "Week 168",
   "packageName": "io.github.napoleoncqf.week168",
-  "versionCode": 10100,
-  "versionName": "1.1.0",
   "targetSdk": 36,
   "platform": "android-36",
   "releaseApk": "Week168.apk",

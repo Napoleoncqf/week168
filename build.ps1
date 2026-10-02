@@ -314,8 +314,16 @@ if ($Edition -notmatch "^[a-z][a-z0-9-]{0,30}$") { throw "无效的版本名：$
 $EditionPath = Join-Path $RealProjectRoot "editions\$Edition.json"
 Require-File $EditionPath "版本配置"
 $EditionConfig = Get-Content -LiteralPath $EditionPath -Raw -Encoding UTF8 | ConvertFrom-Json
-if ($VersionCode -eq 0) { $VersionCode = [int]$EditionConfig.versionCode }
-if ([string]::IsNullOrWhiteSpace($VersionName)) { $VersionName = [string]$EditionConfig.versionName }
+# 版本号统一来自 editions\version.json，经 scripts\edition.js 校验并推出 VersionCode。
+$EditionScript = Join-Path $RealProjectRoot "scripts\edition.js"
+if ($VersionCode -eq 0) {
+    $VersionCode = [int](& node $EditionScript get $Edition versionCode)
+    Assert-CommandSucceeded "读取 VersionCode"
+}
+if ([string]::IsNullOrWhiteSpace($VersionName)) {
+    $VersionName = [string](& node $EditionScript get $Edition versionName)
+    Assert-CommandSucceeded "读取 VersionName"
+}
 if ([string]::IsNullOrWhiteSpace($PlatformVersion)) { $PlatformVersion = [string]$EditionConfig.platform }
 
 if ([string]::IsNullOrWhiteSpace($AndroidSdk)) {

@@ -102,7 +102,7 @@ Copy-Item .\signing.example.psd1 .\android\keystore\signing.local.psd1
 pwsh .\build.ps1 -Edition general
 ```
 
-版本号、包名、默认分类等都来自 `editions/general.json`；需要时可用 `-VersionCode`、`-VersionName` 临时覆盖。构建后可运行 `pwsh .\android\tests\verify-apk.ps1 -Edition general` 检查权限、版本和打包内容。
+包名、默认分类等来自 `editions/general.json`，版本号统一写在 `editions/version.json`（VersionCode 自动推出）；需要时可用 `-VersionCode`、`-VersionName` 临时覆盖。构建后可运行 `pwsh .\android\tests\verify-apk.ps1 -Edition general` 检查权限、版本和打包内容。
 
 构建完成后，签名 APK 位于 `release\Week168.apk`。首次构建会生成长期签名密钥；请离线妥善备份密钥、别名和密码。丢失签名密钥后，将无法为已安装用户提供可覆盖安装的更新。
 

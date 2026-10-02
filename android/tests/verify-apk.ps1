@@ -36,8 +36,16 @@ if ([string]::IsNullOrWhiteSpace($Edition)) {
 }
 if ($Edition -notmatch "^[a-z][a-z0-9-]{0,30}$") { throw "无效的版本名：$Edition" }
 $EditionConfig = Get-Content -LiteralPath (Join-Path $RealProjectRoot "editions\$Edition.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-if ($ExpectedVersionCode -eq 0) { $ExpectedVersionCode = [int]$EditionConfig.versionCode }
-if ([string]::IsNullOrWhiteSpace($ExpectedVersionName)) { $ExpectedVersionName = [string]$EditionConfig.versionName }
+# 期望版本统一来自 editions\version.json（经 scripts\edition.js 推出 VersionCode）。
+$EditionScript = Join-Path $RealProjectRoot "scripts\edition.js"
+if ($ExpectedVersionCode -eq 0) {
+    $ExpectedVersionCode = [int](& node $EditionScript get $Edition versionCode)
+    Assert-ExitCode "读取 VersionCode"
+}
+if ([string]::IsNullOrWhiteSpace($ExpectedVersionName)) {
+    $ExpectedVersionName = [string](& node $EditionScript get $Edition versionName)
+    Assert-ExitCode "读取 VersionName"
+}
 if ([string]::IsNullOrWhiteSpace($ExpectedSignerSha256)) { $ExpectedSignerSha256 = [string]$EditionConfig.expectedSignerSha256 }
 $PackageName = [string]$EditionConfig.packageName
 $ReleaseApkName = [string]$EditionConfig.releaseApk
