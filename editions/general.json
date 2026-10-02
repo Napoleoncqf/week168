@@ -9,7 +9,7 @@
   "platform": "android-36",
   "releaseApk": "Week168.apk",
   "signingConfig": "android/keystore/signing.local.psd1",
-  "expectedSignerSha256": "",
+  "expectedSignerSha256": "7e2b69f08b8eae17f7d29deca5e47b1ee2c7065a60c1967cdf06627b8a3cf08d",
   "features": {
     "aiImport": false,
     "ratings": false

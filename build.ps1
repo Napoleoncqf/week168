@@ -345,7 +345,15 @@ foreach ($RequiredKey in @("KeystorePath", "Alias", "StorePassword", "KeyPasswor
 }
 $SigningKeystorePath = [string]$SigningSettings.KeystorePath
 if (-not [IO.Path]::IsPathRooted($SigningKeystorePath)) {
-    $SigningKeystorePath = Join-Path $RealProjectRoot $SigningKeystorePath
+    # 相对路径按配置文件所属项目解析：配置位于 <项目>\android\keystore\ 时以该项目为根，
+    # 否则以本仓库为根。这样可直接引用另一个工作副本里的签名配置。
+    $SigningConfigDir = Split-Path -Parent ([IO.Path]::GetFullPath($SigningConfig))
+    $KeystoreBase = $RealProjectRoot
+    if ((Split-Path -Leaf $SigningConfigDir) -eq "keystore" -and
+        (Split-Path -Leaf (Split-Path -Parent $SigningConfigDir)) -eq "android") {
+        $KeystoreBase = Split-Path -Parent (Split-Path -Parent $SigningConfigDir)
+    }
+    $SigningKeystorePath = Join-Path $KeystoreBase $SigningKeystorePath
 }
 $SigningKeystorePath = [IO.Path]::GetFullPath($SigningKeystorePath)
 $SigningAlias = [string]$SigningSettings.Alias

@@ -4,20 +4,20 @@
 
 本仓库公开的是通用版 Week168：一款简洁的 Android 时间记录工具。它不要求注册账号，不展示广告，不使用分析服务，也不申请网络权限。记录只保存在你的设备上，你可以随时导出 JSON 文件自行备份。
 
-通用版以简体中文为主，支持 Android 8.0（API 26）及以上系统，包名为 `io.github.napoleoncqf.week168`。GitHub Releases 目前提供通用版 v1.0.0。
+通用版以简体中文为主，支持 Android 8.0（API 26）及以上系统，包名为 `io.github.napoleoncqf.week168`。GitHub Releases 目前提供通用版 v1.1.0。
 
-官网另有个人版「168小时」，包名为 `com.one68hours.app`。两版独立安装，不能互相覆盖升级，记录也不会自动迁移。预览截图对应通用版 v1.0.0；`main` 分支源码已更新到 1.1.0（尚未发布 APK，变化见 [CHANGELOG](CHANGELOG.md)）。
+官网另有个人版「168小时」，包名为 `com.one68hours.app`。两版独立安装，不能互相覆盖升级，记录也不会自动迁移。预览截图拍摄于通用版 v1.0.0，1.1.0 的首页按钮布局略有不同，变化见 [CHANGELOG](CHANGELOG.md)。
 
 ## 官网个人版「168小时」下载
 
 | 入口 | 下载 |
 | --- | --- |
-| 最新版 | **[v1.1.7 下载 APK](https://isotopebase.com/week168/downloads/168-hours-v1.1.7.apk)** |
+| 最新版 | **[v1.1.8 下载 APK](https://isotopebase.com/week168/downloads/168-hours-v1.1.8.apk)** |
 | 最早版 | [v1.0.2 下载 APK](https://isotopebase.com/week168/downloads/168-hours-v1.0.2.apk) |
 | 历史版本 | [查看全部历史版本与说明](https://isotopebase.com/week168/history.html) |
 | 官网说明 | [下载说明与校验信息](https://isotopebase.com/week168/#downloads) |
 
-个人版 v1.1.7 更新：文字补记成为首页主操作；先选日期、写正文，模型和深度模式收在可展开的识别设置中；API 配置默认显示摘要，点击“管理”再编辑或测试。继续支持 DeepSeek 快速识别、多组 API 配置、模型选择与手动补记。
+个人版 v1.1.8 更新：点按很长的待补空白时只预填点到的那一小时；文字补记没发送的内容自动保存；识别结果过长时提示分段识别。继续支持 DeepSeek 快速识别、多组 API 配置、模型选择与手动补记。
 
 ## 通用版 Week168 截图
 
@@ -60,7 +60,7 @@ cd dist-web && python3 -m http.server 8080
 
 ## 安装
 
-官网个人版「168小时」请从上方入口下载。通用版 Week168 请前往 [GitHub Releases](https://github.com/Napoleoncqf/week168/releases)；目前可下载 v1.0.0 的 `Week168.apk`。
+官网个人版「168小时」请从上方入口下载。通用版 Week168 请前往 [GitHub Releases](https://github.com/Napoleoncqf/week168/releases)；目前可下载 v1.1.0 的 `Week168.apk`，可直接覆盖安装 v1.0.0 并保留记录。
 
 如需校验，可核对对应官网说明页或 GitHub Release 页面提供的 SHA-256。打开 APK 时，Android 可能要求你允许当前浏览器或文件管理器“安装未知应用”；完成安装后，可回到系统设置关闭这项临时授权。“未知来源”提示是因为 APK 通过官网或 GitHub 而不是 Google Play 分发，并不代表应用需要额外权限。请从上方官网或本仓库 Releases 获取对应版本的安装包。
 
