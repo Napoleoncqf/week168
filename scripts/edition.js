@@ -52,7 +52,8 @@ function loadEdition(id) {
         || !fs.existsSync(path.join(ROOT, "editions", edition.reportExtension))) fail(`${id} 的 reportExtension 无效`);
   }
   const features = edition.features || {};
-  if (typeof features.aiImport !== "boolean" || typeof features.ratings !== "boolean") fail(`${id} 的 features 不完整`);
+  if (typeof features.aiImport !== "boolean" || typeof features.ratings !== "boolean"
+      || typeof features.health !== "boolean") fail(`${id} 的 features 不完整`);
   const backup = edition.backup || {};
   if (!backup.app || !Array.isArray(backup.accept) || !backup.accept.includes(backup.app)
       || !backup.recoveryApp || !backup.filePrefix || !backup.nativeFilePrefix) fail(`${id} 的 backup 不完整`);

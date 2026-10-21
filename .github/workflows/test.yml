@@ -30,4 +30,6 @@ jobs:
           node --check android/app/src/main/assets/core.js
           node --check android/app/src/main/assets/app.js
           node --check android/app/src/main/assets/text-import.js
+          node --check android/app/src/main/assets/health-core.js
+          node --check android/app/src/main/assets/health-ui.js
           node --check scripts/edition.js

@@ -4,20 +4,20 @@
 
 本仓库公开的是通用版 Week168：一款简洁的 Android 时间记录工具。它不要求注册账号，不展示广告，不使用分析服务，也不申请网络权限。记录只保存在你的设备上，你可以随时导出 JSON 文件自行备份。
 
-通用版以简体中文为主，支持 Android 8.0（API 26）及以上系统，包名为 `io.github.napoleoncqf.week168`。GitHub Releases 目前提供通用版 v1.1.0。
+通用版以简体中文为主，支持 Android 8.0（API 26）及以上系统，包名为 `io.github.napoleoncqf.week168`。GitHub Releases 目前提供通用版 v1.2.0。
 
-官网另有个人版「168小时」，包名为 `com.one68hours.app`。两版独立安装，不能互相覆盖升级，记录也不会自动迁移。预览截图拍摄于通用版 v1.0.0，1.1.0 的首页按钮布局略有不同，变化见 [CHANGELOG](CHANGELOG.md)。
+官网另有个人版「168小时」，包名为 `com.one68hours.app`。两版独立安装，不能互相覆盖升级，记录也不会自动迁移。预览截图拍摄于通用版 v1.0.0，之后的首页按钮布局略有不同，健康追踪页未包含在截图中，变化见 [CHANGELOG](CHANGELOG.md)。
 
 ## 官网个人版「168小时」下载
 
 | 入口 | 下载 |
 | --- | --- |
-| 最新版 | **[v1.1.8 下载 APK](https://isotopebase.com/week168/downloads/168-hours-v1.1.8.apk)** |
+| 最新版 | **[v1.2.0 下载 APK](https://isotopebase.com/week168/downloads/168-hours-v1.2.0.apk)** |
 | 最早版 | [v1.0.2 下载 APK](https://isotopebase.com/week168/downloads/168-hours-v1.0.2.apk) |
 | 历史版本 | [查看全部历史版本与说明](https://isotopebase.com/week168/history.html) |
 | 官网说明 | [下载说明与校验信息](https://isotopebase.com/week168/#downloads) |
 
-个人版 v1.1.8 更新：点按很长的待补空白时只预填点到的那一小时；文字补记没发送的内容自动保存；识别结果过长时提示分段识别。继续支持 DeepSeek 快速识别、多组 API 配置、模型选择与手动补记。
+个人版 v1.2.0 更新：新增可选的健康追踪（默认关闭），可记录注射与体重、设置注射日提醒；修复导入备份没有反应的问题；确认框改为系统样式。继续支持 DeepSeek 快速识别、多组 API 配置、模型选择与手动补记。
 
 ## 通用版 Week168 截图
 
@@ -36,6 +36,7 @@
 - 浅色、深色与跟随系统三种外观模式
 - 可选的每日一次本地提醒
 - 通过 JSON 文件手动备份与恢复
+- 可选的健康追踪（默认关闭）：注射记录与部位轮换、体重趋势、按计划的注射日提醒、本机估算药物残留水平（仅供参考，不推荐剂量），健康数据单独备份
 - 全程离线，无账号、无广告、无网络权限
 
 ## 网页版（PWA）
@@ -60,7 +61,7 @@ cd dist-web && python3 -m http.server 8080
 
 ## 安装
 
-官网个人版「168小时」请从上方入口下载。通用版 Week168 请前往 [GitHub Releases](https://github.com/Napoleoncqf/week168/releases)；目前可下载 v1.1.0 的 `Week168.apk`，可直接覆盖安装 v1.0.0 并保留记录。
+官网个人版「168小时」请从上方入口下载。通用版 Week168 请前往 [GitHub Releases](https://github.com/Napoleoncqf/week168/releases)；目前可下载 v1.2.0 的 `Week168.apk`，可直接覆盖安装 v1.1.0 或 v1.0.0 并保留记录。
 
 如需校验，可核对对应官网说明页或 GitHub Release 页面提供的 SHA-256。打开 APK 时，Android 可能要求你允许当前浏览器或文件管理器“安装未知应用”；完成安装后，可回到系统设置关闭这项临时授权。“未知来源”提示是因为 APK 通过官网或 GitHub 而不是 Google Play 分发，并不代表应用需要额外权限。请从上方官网或本仓库 Releases 获取对应版本的安装包。
 
@@ -73,7 +74,7 @@ cd dist-web && python3 -m http.server 8080
 | 项目 | 用途 |
 | --- | --- |
 | 网络权限 | 不申请。应用不能把记录发送到网络。 |
-| 通知权限 | Android 13 及以上系统中，仅在你开启每日提醒时请求；拒绝后其余功能仍可使用。 |
+| 通知权限 | Android 13 及以上系统中，仅在你开启每日提醒或注射日提醒时请求；拒绝后其余功能仍可使用。 |
 | 开机完成通知 | 用于设备重启、应用更新或时区变化后恢复你已开启的本地提醒。 |
 | 文件访问 | 不申请通用存储权限。导入和导出通过 Android 系统文件选择器完成，位置由你决定。 |
 

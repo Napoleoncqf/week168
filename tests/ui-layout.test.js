@@ -147,3 +147,67 @@ run("the web build hides daily reminders and protects browser storage", () => {
   assert.match(app, /all\("\[data-native-only\]"\)/);
   assert.match(app, /storage\.persisted\(\)\.then\(\(granted\) => granted \|\| storage\.persist\(\)\)/);
 });
+
+const healthUi = source("android/app/src/main/assets/health-ui.js");
+const doseScheduler = source("android/app/src/main/java/com/one68hours/app/DoseReminderScheduler.java");
+const notifications = source("android/app/src/main/java/com/one68hours/app/NotificationHelper.java");
+
+run("health tracking is opt-in and keeps the five-item bottom navigation", () => {
+  assert.equal((html.match(/data-nav="/g) || []).length, 5);
+  assert.doesNotMatch(html, /data-nav="health"/);
+  assert.match(html, /id="healthEnabled"(?![^>]*checked)/);
+  assert.match(html, /id="healthGlance"[^>]*hidden/);
+  const scripts = Array.from(html.matchAll(/<script src="([^"?]+)/g)).map((match) => match[1]);
+  assert.deepEqual(scripts, ["edition.js", "core.js", "text-import.js", "health-core.js", "health-ui.js", "app.js"]);
+  assert.match(html, /<section class="settings-group card" data-feature="health">/);
+});
+
+run("health UI never sends data out or recommends doses", () => {
+  assert.doesNotMatch(healthUi, /fetch\(|XMLHttpRequest|sendBeacon|WebSocket/);
+  assert.doesNotMatch(`${html}\n${healthUi}`, /建议剂量|剂量建议为|自动计算剂量|加量到|减量到/);
+  assert.match(html, /不推荐剂量/);
+  assert.doesNotMatch(html, /不计算剂量/);
+});
+
+run("health page leads with the next-dose card, then tiles, today and the site map", () => {
+  const page = html.slice(html.indexOf('id="view-health"'), html.indexOf("</main>"));
+  const order = ["doseCard", "lastDoseTile", "weightTile", "healthTodayList", "levelBody", "siteMap", "weightChart", "injectionList"]
+    .map((id) => page.indexOf(`id="${id}"`));
+  order.forEach((index) => assert.ok(index > 0));
+  assert.deepEqual(order, order.slice().sort((a, b) => a - b));
+  assert.doesNotMatch(page, /照顾好身体的节奏/);
+  assert.match(page, /<h1 id="healthTitle">/);
+});
+
+run("site map is inline SVG and the level estimate is labelled as an estimate", () => {
+  assert.doesNotMatch(`${html}\n${healthUi}`, /<img|\.png|\.jpg|url\(http/i);
+  assert.match(healthUi, /class="body-map" viewBox=/);
+  ["arm-left", "arm-right", "abdomen-left", "abdomen-right", "thigh-left", "thigh-right"].forEach((id) => {
+    assert.match(healthUi, new RegExp(`"${id}": \\[\\d+, \\d+\\]`));
+  });
+  assert.match(html, /<section class="card level-card"[\s\S]*?估算值，仅供参考，不构成医疗建议。[\s\S]*?<\/section>/);
+  assert.match(healthUi, /H\.levelEstimate\(state, new Date\(\)\)/);
+});
+
+run("health cards stay within a 360dp screen", () => {
+  const small = styles.slice(styles.lastIndexOf("@media (max-width: 390px)"));
+  assert.match(small, /\.site-map\s*\{[^}]*grid-template-columns:\s*108px/);
+  assert.match(small, /\.dose-ring\s*\{[^}]*width:\s*102px/);
+  assert.match(styles, /\.health-tiles\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
+});
+
+run("dose reminders use their own alarm slot and a private notification", () => {
+  assert.match(doseScheduler, /REQUEST_CODE = 169/);
+  assert.match(doseScheduler, /PREFS = "dose_reminder"/);
+  assert.match(notifications, /DOSE_CHANNEL_ID = "dose_reminder"/);
+  assert.match(notifications, /setPublicVersion\(publicVersion\)/);
+});
+
+run("JS dialogs are native and the WebView repaints after returning to the app", () => {
+  assert.match(activity, /new OfflineChromeClient\(\)/);
+  assert.match(activity, /public boolean onJsAlert\(/);
+  assert.match(activity, /public boolean onJsConfirm\(/);
+  assert.match(activity, /setOnCancelListener[\s\S]*?result\.cancel\(\)/);
+  const resume = activity.slice(activity.indexOf("protected void onResume()"), activity.indexOf("protected void onPause()"));
+  assert.match(resume, /webView\.onResume\(\);[\s\S]*?webView\.invalidate\(\);/);
+});

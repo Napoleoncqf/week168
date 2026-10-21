@@ -7,6 +7,13 @@ import android.content.Intent;
 public final class ReminderReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
+        if (DoseReminderScheduler.ACTION.equals(intent.getAction())) {
+            if (DoseReminderScheduler.isEnabled(context)) {
+                NotificationHelper.showDoseReminder(context);
+                DoseReminderScheduler.rescheduleStored(context);
+            }
+            return;
+        }
         if (!ReminderScheduler.isEnabled(context)) {
             return;
         }

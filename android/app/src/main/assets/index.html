@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f6f5f1" />
     <meta name="color-scheme" content="light dark" />
     <title>Week 168</title>
-    <link rel="stylesheet" href="styles.css?v=1.1.8" />
+    <link rel="stylesheet" href="styles.css?v=1.2.0" />
   </head>
   <body>
     <div class="app-shell" id="appShell">
@@ -43,6 +43,18 @@
               <button class="button secondary" id="continueButton" type="button" data-action="continue-last">接着上一条</button>
             </div>
           </section>
+
+          <button class="health-glance" id="healthGlance" type="button" data-action="health-open" aria-label="打开健康追踪" hidden>
+            <span class="glance-tile dose">
+              <span class="glance-ring" id="glanceRing" aria-hidden="true"></span>
+              <span class="glance-copy"><small>下一针</small><strong id="glanceDose">未设置</strong><em id="glanceDoseMeta">点这里设置计划</em></span>
+            </span>
+            <span class="glance-tile weight">
+              <span class="glance-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="5" /><path d="M7.5 10a5 5 0 0 1 9 0" /><path d="m12 10 1.6-2.4" /></svg></span>
+              <span class="glance-copy"><small>体重</small><strong id="glanceWeight">—</strong><em id="glanceWeightMeta">还没有记录</em></span>
+            </span>
+            <svg class="glance-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+          </button>
 
           <div class="section-heading timeline-heading">
             <div><p class="eyebrow">一天</p><h2 id="timelineHeading">时间轴</h2></div>
@@ -159,6 +171,13 @@
             <label class="time-setting" for="reminderTime"><span>提醒时间</span><input type="time" id="reminderTime" value="22:00" /></label>
           </section>
 
+          <section class="settings-group card" data-feature="health">
+            <div class="settings-row">
+              <div class="settings-title"><span class="settings-icon health-icon">♡</span><div><strong>健康追踪</strong><small>注射与体重记录，默认关闭，只存本机</small></div></div>
+              <label class="switch"><input type="checkbox" id="healthEnabled" aria-label="开启健康追踪" /><span></span></label>
+            </div>
+          </section>
+
           <section class="settings-group card">
             <div class="settings-title"><span class="settings-icon">＋</span><div><strong>自定义分类</strong><small>为自己的生活留一个准确的名字</small></div></div>
             <div class="custom-category-list" id="customCategoryList"></div>
@@ -210,8 +229,83 @@
           </section>
 
           <section class="settings-group card about-card">
-            <div><strong data-edition-name>Week 168</strong><small>你的时间，只属于你。</small></div><span data-edition-version>v1.1.8</span>
+            <div><strong data-edition-name>Week 168</strong><small>你的时间，只属于你。</small></div><span data-edition-version>v1.2.0</span>
           </section>
+        </section>
+        <section class="view" id="view-health" data-view="health" aria-labelledby="healthTitle">
+          <div class="health-top">
+            <button class="back-link" type="button" data-action="health-back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>今天</button>
+            <h1 id="healthTitle">健康追踪</h1>
+          </div>
+
+          <section class="card dose-card" id="doseCard" aria-label="下一针"></section>
+
+          <div class="health-tiles">
+            <button class="health-tile dose" id="lastDoseTile" type="button" data-action="health-new-injection"></button>
+            <button class="health-tile weight" id="weightTile" type="button" data-action="health-new-weight"></button>
+          </div>
+
+          <section class="card health-today" aria-labelledby="healthTodayTitle">
+            <div class="mini-head"><h2 id="healthTodayTitle">今日</h2><small id="healthTodayDate"></small></div>
+            <div class="today-checklist" id="healthTodayList"></div>
+          </section>
+
+          <section class="card level-card" aria-labelledby="levelTitle">
+            <div class="mini-head"><h2 id="levelTitle">估算水平</h2><span class="estimate-badge">估算</span></div>
+            <div class="level-body" id="levelBody"></div>
+            <p class="estimate-note">估算值，仅供参考，不构成医疗建议。</p>
+          </section>
+
+          <section class="card site-card" aria-labelledby="siteCardTitle">
+            <div class="mini-head"><h2 id="siteCardTitle">注射部位</h2><small>按你的记录轮换</small></div>
+            <div class="site-map" id="siteMap"></div>
+          </section>
+
+          <section class="card weight-card" aria-labelledby="weightHeadline">
+            <div class="card-header">
+              <div><p class="eyebrow">体重趋势</p><h2 id="weightHeadline">还没有记录</h2><small class="card-sub" id="weightSubline">每天记一次就能看到趋势</small></div>
+              <button class="pill-button weight-accent" type="button" data-action="health-new-weight"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>记体重</button>
+            </div>
+            <div class="weight-stats" id="weightStats"></div>
+            <div class="segmented chart-range" id="weightRange" role="radiogroup" aria-label="体重趋势范围">
+              <button type="button" role="radio" data-action="health-weight-range" data-days="7">7 天</button>
+              <button type="button" role="radio" data-action="health-weight-range" data-days="30">30 天</button>
+              <button type="button" role="radio" data-action="health-weight-range" data-days="90">90 天</button>
+              <button type="button" role="radio" data-action="health-weight-range" data-days="0">全部</button>
+            </div>
+            <div class="weight-chart" id="weightChart"></div>
+            <div class="weight-recent" id="weightRecent"></div>
+          </section>
+
+          <section class="card" aria-labelledby="injectionHeadline">
+            <div class="card-header">
+              <div><p class="eyebrow">注射记录</p><h2 id="injectionHeadline">还没有记录</h2></div>
+              <button class="text-button" type="button" data-action="health-open-plan" id="planHeaderButton">用药计划</button>
+            </div>
+            <div class="injection-list" id="injectionList"></div>
+          </section>
+
+          <section class="card health-data-card">
+            <div class="settings-row">
+              <div class="settings-title"><span class="settings-icon">⇅</span><div><strong>健康数据备份</strong><small>与时间记录分开导出和恢复</small></div></div>
+              <div class="segmented unit-toggle" id="weightUnitToggle" role="radiogroup" aria-label="体重单位">
+                <button type="button" role="radio" data-action="health-weight-unit" data-unit="kg">kg</button>
+                <button type="button" role="radio" data-action="health-weight-unit" data-unit="jin">斤</button>
+              </div>
+            </div>
+            <div class="two-buttons">
+              <button class="button secondary" type="button" data-action="health-export">导出健康备份</button>
+              <button class="button secondary" type="button" data-action="health-import">导入健康备份</button>
+            </div>
+            <p class="recovery-notice" id="healthRecoveryNotice" hidden>检测到过异常的健康数据。原始内容不会被静默覆盖，你可以先保存一份抢救副本。</p>
+            <button class="button secondary full" id="healthRecoveryButton" type="button" data-action="health-export-recovery" hidden>导出健康抢救副本</button>
+            <div class="settings-row danger-row">
+              <small>删除用药计划、注射和体重记录；时间记录不受影响</small>
+              <button class="text-button danger-text" type="button" data-action="health-clear">清空健康数据</button>
+            </div>
+          </section>
+
+          <p class="health-disclaimer"><span data-edition-name>Week 168</span> 只做个人记录。残留水平是按你填写的参数做的粗略估算，不推荐剂量，也不提供治疗建议。剂量、间隔和任何用药调整，请以医生的意见为准。</p>
         </section>
       </main>
 
@@ -319,11 +413,121 @@
       <div class="two-buttons"><button class="button secondary" type="button" data-action="close-category">取消</button><button class="button primary" type="button" data-action="save-category">添加</button></div>
     </section>
 
+    <div class="sheet-backdrop hidden" id="injectionBackdrop" aria-hidden="true"></div>
+    <section class="bottom-sheet hidden" id="injectionSheet" role="dialog" aria-modal="true" aria-labelledby="injectionSheetTitle" tabindex="-1">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-header">
+        <button class="text-button muted" type="button" data-action="health-close-sheet">取消</button>
+        <h2 id="injectionSheetTitle">记录一针</h2>
+        <button class="text-button strong" type="button" data-action="health-save-injection">保存</button>
+      </div>
+      <form class="health-form" id="injectionForm" autocomplete="off">
+        <div class="date-time-card dose-tint">
+          <div class="time-range">
+            <label><span>日期</span><input type="date" id="injectionDate" required /></label>
+            <span class="range-arrow">·</span>
+            <label><span>时间</span><input type="time" id="injectionTime" required /></label>
+          </div>
+        </div>
+        <label class="input-field"><span>药物名称 <small>可选</small></span><input type="text" id="injectionName" maxlength="40" list="medicationOptions" placeholder="与用药计划一致即可" /></label>
+        <div class="dose-input-row">
+          <label class="input-field"><span>剂量 <small>按处方填写，可留空</small></span><input type="number" id="injectionDose" inputmode="decimal" min="0" max="1000" step="any" placeholder="例如 2.5" /></label>
+          <div class="segmented unit-picker" id="injectionUnits" role="radiogroup" aria-label="剂量单位"></div>
+        </div>
+        <div class="form-section">
+          <div class="form-label"><strong>注射部位</strong><small>轮换部位，标记的是下一处</small></div>
+          <div class="site-picker" id="sitePicker"></div>
+        </div>
+        <label class="input-field"><span>备注 <small>可选</small></span><input type="text" id="injectionNote" maxlength="200" placeholder="例如：饭后、轻微恶心" /></label>
+        <div class="edit-actions hidden" id="injectionEditActions">
+          <button class="button danger full" type="button" data-action="health-delete-injection">删除这条注射记录</button>
+        </div>
+        <div class="sheet-safe-space"></div>
+      </form>
+    </section>
+
+    <div class="sheet-backdrop hidden" id="weightBackdrop" aria-hidden="true"></div>
+    <section class="bottom-sheet hidden" id="weightSheet" role="dialog" aria-modal="true" aria-labelledby="weightSheetTitle" tabindex="-1">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-header">
+        <button class="text-button muted" type="button" data-action="health-close-sheet">取消</button>
+        <h2 id="weightSheetTitle">记体重</h2>
+        <button class="text-button strong" type="button" data-action="health-save-weight">保存</button>
+      </div>
+      <form class="health-form" id="weightForm" autocomplete="off">
+        <label class="input-field"><span>日期</span><input type="date" id="weightDate" required /></label>
+        <div class="weight-dial">
+          <button class="icon-button" type="button" data-action="health-weight-step" data-step="-1" aria-label="减少 0.1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button>
+          <label class="weight-input"><input type="number" id="weightValue" inputmode="decimal" step="0.1" min="20" max="800" placeholder="0.0" aria-label="体重" /><span id="weightUnitLabel">kg</span></label>
+          <button class="icon-button" type="button" data-action="health-weight-step" data-step="1" aria-label="增加 0.1"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
+        </div>
+        <p class="form-helper center" id="weightHelper">每天保留一条，同一天再次保存会更新它</p>
+        <label class="input-field"><span>备注 <small>可选</small></span><input type="text" id="weightNote" maxlength="200" placeholder="例如：晨起空腹" /></label>
+        <div class="edit-actions hidden" id="weightEditActions">
+          <button class="button danger full" type="button" data-action="health-delete-weight">删除这天的体重</button>
+        </div>
+        <div class="sheet-safe-space"></div>
+      </form>
+    </section>
+
+    <div class="sheet-backdrop hidden" id="planBackdrop" aria-hidden="true"></div>
+    <section class="bottom-sheet hidden" id="planSheet" role="dialog" aria-modal="true" aria-labelledby="planSheetTitle" tabindex="-1">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="sheet-header">
+        <button class="text-button muted" type="button" data-action="health-close-sheet">取消</button>
+        <h2 id="planSheetTitle">用药计划</h2>
+        <button class="text-button strong" type="button" data-action="health-save-plan">保存</button>
+      </div>
+      <form class="health-form" id="planForm" autocomplete="off">
+        <label class="input-field"><span>药物名称</span><input type="text" id="planName" maxlength="40" list="medicationOptions" placeholder="例如：司美格鲁肽" /></label>
+        <datalist id="medicationOptions"><option value="司美格鲁肽"></option><option value="替尔泊肽"></option><option value="度拉糖肽"></option><option value="利拉鲁肽"></option></datalist>
+        <div class="dose-input-row">
+          <label class="input-field"><span>当前剂量 <small>按处方填写，可留空</small></span><input type="number" id="planDose" inputmode="decimal" min="0" max="1000" step="any" placeholder="例如 0.5" /></label>
+          <div class="segmented unit-picker" id="planUnits" role="radiogroup" aria-label="剂量单位"></div>
+        </div>
+        <div class="form-section">
+          <div class="form-label"><strong>间隔</strong><small>按处方填写</small></div>
+          <div class="interval-row">
+            <div class="duration-chips interval-chips" id="intervalChips">
+              <button type="button" data-action="health-pick-interval" data-days="1">每天</button>
+              <button type="button" data-action="health-pick-interval" data-days="7">每周</button>
+              <button type="button" data-action="health-pick-interval" data-days="14">每两周</button>
+            </div>
+            <label class="interval-custom"><span>每</span><input type="number" id="planInterval" inputmode="numeric" min="1" max="60" step="1" aria-label="间隔天数" /><span>天</span></label>
+          </div>
+        </div>
+        <label class="input-field"><span id="planStartLabel">下一针日期</span><input type="date" id="planStart" required /></label>
+        <div class="date-time-card plan-reminder">
+          <div class="settings-row">
+            <div class="settings-title"><span class="settings-icon dose-icon">◷</span><div><strong>注射日提醒</strong><small id="planReminderHint">到下一针那天，本机发一条通知</small></div></div>
+            <label class="switch"><input type="checkbox" id="planReminder" aria-label="注射日提醒" /><span></span></label>
+          </div>
+          <label class="time-setting visible" for="planReminderTime"><span>提醒时间</span><input type="time" id="planReminderTime" value="09:00" /></label>
+        </div>
+        <div class="form-section">
+          <div class="form-label"><strong>残留估算 <small>可选</small></strong><small>用于估算水平卡片</small></div>
+          <div class="duration-chips interval-chips pk-chips" id="pkPresets"></div>
+          <div class="pk-inputs">
+            <label class="input-field"><span>半衰期 <small>小时</small></span><input type="number" id="planHalfLife" inputmode="decimal" min="1" max="2000" step="any" placeholder="例如 165" /></label>
+            <label class="input-field"><span>达峰时间 <small>小时</small></span><input type="number" id="planTmax" inputmode="decimal" min="0.5" max="336" step="any" placeholder="例如 48" /></label>
+          </div>
+          <p class="form-helper" id="pkHint">预设为说明书公开参考值，个体差异很大，可按说明书修改。</p>
+        </div>
+        <p class="form-helper">剂量与间隔请遵医嘱。<span data-edition-name>Week 168</span> 不推荐剂量；残留估算只用来看趋势，不构成医疗建议。</p>
+        <div class="edit-actions hidden" id="planEditActions">
+          <button class="button danger full" type="button" data-action="health-delete-plan">删除用药计划（保留记录）</button>
+        </div>
+        <div class="sheet-safe-space"></div>
+      </form>
+    </section>
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
     <script src="edition.js"></script>
-    <script src="core.js?v=1.1.8"></script>
-    <script src="text-import.js?v=1.1.8"></script>
-    <script src="app.js?v=1.1.8"></script>
+    <script src="core.js?v=1.2.0"></script>
+    <script src="text-import.js?v=1.2.0"></script>
+    <script src="health-core.js?v=1.2.0"></script>
+    <script src="health-ui.js?v=1.2.0"></script>
+    <script src="app.js?v=1.2.0"></script>
   </body>
 </html>

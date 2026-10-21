@@ -10,7 +10,8 @@
   "expectedSignerSha256": "7e2b69f08b8eae17f7d29deca5e47b1ee2c7065a60c1967cdf06627b8a3cf08d",
   "features": {
     "aiImport": false,
-    "ratings": false
+    "ratings": false,
+    "health": true
   },
   "reportExtension": null,
   "backup": {

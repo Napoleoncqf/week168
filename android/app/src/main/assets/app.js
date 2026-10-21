@@ -72,6 +72,7 @@
   const $ = (id) => document.getElementById(id);
   const all = (selector, root) => Array.from((root || document).querySelectorAll(selector));
   const nativeBridge = () => window.AndroidBridge || null;
+  const healthUi = () => (Edition.features.health && window.Week168HealthUI) || null;
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
@@ -385,12 +386,15 @@
   }
 
   function navigate(view) {
-    if (!["today", "week", "report", "history", "settings"].includes(view)) return;
+    if (!["today", "week", "report", "history", "settings", "health"].includes(view)) return;
+    if (view === "health" && !(healthUi() && healthUi().isEnabled())) view = "today";
     if (view !== "today" && ui.rangeSelectMode) setRangeSelectMode(false, false);
     ui.view = view;
     all(".view").forEach((element) => element.classList.toggle("active", element.dataset.view === view));
+    // The health page is entered from Today, so Today stays highlighted.
+    const navView = view === "health" ? "today" : view;
     all("[data-nav]").forEach((button) => {
-      const active = button.dataset.nav === view;
+      const active = button.dataset.nav === navView;
       button.classList.toggle("active", active);
       if (active) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
@@ -398,7 +402,7 @@
     updateFloatingAddVisibility();
     const subtitles = {
       today: "本周，慢慢记录", week: "七天的时间地图", report: "看见，不评判",
-      history: "每一周都算数", settings: "数据只在本机",
+      history: "每一周都算数", settings: "数据只在本机", health: "只做记录，不给建议",
     };
     setText("headerSubtitle", subtitles[view]);
     // A hidden view loses its inner scroll position, so re-anchor the timeline.
@@ -408,6 +412,7 @@
     if (view === "report") renderReport();
     if (view === "history") renderHistory();
     if (view === "settings") renderSettings();
+    if (view === "health") healthUi().render();
     window.scrollTo(0, 0);
   }
 
@@ -600,6 +605,7 @@
     const latest = state.entries.slice().sort((a, b) => new Date(b.end) - new Date(a.end))[0];
     $("continueButton").disabled = !latest;
     setText("continueButton", latest ? `接着上一条 · ${categoryById(latest.categoryId).name}` : "接着上一条");
+    if (healthUi()) healthUi().renderTodayCard();
   }
 
   function categoryTotalsSorted(stats) {
@@ -809,6 +815,7 @@
     if (recoveryButton) recoveryButton.hidden = !preservedRawState;
     if (recoveryNotice) recoveryNotice.hidden = !preservedRawState;
     renderAiSettings();
+    if (healthUi()) healthUi().renderSettings();
   }
 
   function readAiBridge() {
@@ -1955,6 +1962,39 @@
     }
   }
 
+  // Health exports reuse the same Android save flow under a distinct file name.
+  // Returns "native" when the system picker took over, "downloaded" for the
+  // browser fallback, or "" on failure.
+  function exportHealthJson(json, kind) {
+    ui.recoveryExportPending = false;
+    const bridge = nativeBridge();
+    const exporter = bridge && (typeof bridge.exportHealthData === "function" ? bridge.exportHealthData
+      : typeof bridge.exportData === "function" ? bridge.exportData : null);
+    if (exporter) {
+      try {
+        exporter.call(bridge, json);
+        return "native";
+      } catch (error) { /* Use browser download below. */ }
+    }
+    const recovery = kind === "health-recovery";
+    try {
+      const blob = new Blob([json], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${Edition.backup.filePrefix}${recovery ? "健康抢救副本" : "健康备份"}-${Core.toLocalDateKey(new Date())}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast(recovery ? "健康抢救副本已导出" : "健康备份已导出");
+      return "downloaded";
+    } catch (error) {
+      showToast("导出失败，请稍后重试");
+      return "";
+    }
+  }
+
   function requestImport() {
     const bridge = nativeBridge();
     if (bridge && (typeof bridge.requestImport === "function" || typeof bridge.importData === "function")) {
@@ -1971,6 +2011,12 @@
     if (ui.importPending) return;
     ui.importPending = true;
     try {
+      // Both backup kinds arrive through the same picker; route by app marker.
+      const health = healthUi();
+      if (health && health.isHealthBackup(raw)) {
+        health.importBackup(raw);
+        return;
+      }
       const result = validateBackup(raw);
       if (!result.ok) {
         showToast(`无法导入：${result.message}`);
@@ -2342,7 +2388,9 @@
         setSelectedWeek(Core.fromLocalDateKey(target.dataset.week));
         navigate("week");
         break;
-      default: break;
+      default:
+        if (action.startsWith("health-") && healthUi()) healthUi().handleAction(action, target);
+        break;
     }
   }
 
@@ -2390,7 +2438,7 @@
     if (!$("categorySheet").classList.contains("hidden")) return $("categorySheet");
     if (!$("aiSheet").classList.contains("hidden")) return $("aiSheet");
     if (!$("entrySheet").classList.contains("hidden")) return $("entrySheet");
-    return null;
+    return healthUi() ? healthUi().activeSheet() : null;
   }
 
   function focusableIn(root) {
@@ -2415,7 +2463,8 @@
       event.preventDefault();
       if (sheet.id === "categorySheet") closeCategorySheet();
       else if (sheet.id === "aiSheet") closeAiImport();
-      else closeEntry();
+      else if (sheet.id === "entrySheet") closeEntry();
+      else healthUi().closeActiveSheet();
       return;
     }
     if (event.key !== "Tab") return;
@@ -2598,6 +2647,7 @@
       closeEntry();
       return true;
     }
+    if (healthUi() && healthUi().closeActiveSheet()) return true;
     if (ui.rangeSelectMode) {
       setRangeSelectMode(false, false);
       return true;
@@ -2673,9 +2723,26 @@
     } catch (error) { /* Storage unavailable: the settings note still explains. */ }
   }
 
+  function mountHealth() {
+    const health = healthUi();
+    if (!health) return;
+    health.mount({
+      bridge: nativeBridge,
+      escapeHtml,
+      showToast,
+      setSheetOpen,
+      navigate,
+      renderAll,
+      requestImport,
+      exportJson: exportHealthJson,
+      currentView: () => ui.view,
+    });
+  }
+
   function init() {
     applyEdition();
     installEvents();
+    mountHealth();
     readNativeReminderState();
     if (needsInitialPersist) {
       persist();
@@ -2685,7 +2752,8 @@
     renderAll();
     scheduleDayBoundaryRefresh();
     protectWebStorage();
-    if (startupWarning) window.requestAnimationFrame(() => showToast(startupWarning));
+    const warning = startupWarning || (healthUi() && healthUi().isEnabled() ? healthUi().startupWarning() : "");
+    if (warning) window.requestAnimationFrame(() => showToast(warning));
     const media = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
     if (media) {
       const listener = () => { if (state.settings.theme === "system") applyTheme(); };

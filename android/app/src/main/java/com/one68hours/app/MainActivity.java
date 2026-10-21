@@ -2,7 +2,9 @@ package com.one68hours.app;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
@@ -17,6 +19,7 @@ import android.provider.Settings;
 import android.view.View;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.JsResult;
 import android.webkit.SslErrorHandler;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -82,6 +85,7 @@ public final class MainActivity extends Activity {
     private boolean backDispatchPending;
     private boolean darkSystemTheme;
     private boolean destroyed;
+    private String exportFilePrefix = Edition.BACKUP_FILE_PREFIX;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -160,7 +164,7 @@ public final class MainActivity extends Activity {
         webView.setBackgroundColor(darkSystemTheme
                 ? Color.rgb(16, 22, 19)
                 : Color.rgb(247, 248, 244));
-        webView.setWebChromeClient(new WebChromeClient());
+        webView.setWebChromeClient(new OfflineChromeClient());
         webView.setWebViewClient(new OfflineWebViewClient());
         webView.addJavascriptInterface(new NativeBridge(), "AndroidBridge");
 
@@ -222,12 +226,30 @@ public final class MainActivity extends Activity {
         super.onResume();
         if (webView != null) {
             webView.onResume();
+            // After a system activity (file picker, permission prompt) covered
+            // the app, the WebView can keep showing a stale or blank frame
+            // until the next input. Ask for a fresh frame now and once more
+            // after the compositor has resumed.
+            webView.invalidate();
+            webView.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (!destroyed && webView != null) {
+                        webView.invalidate();
+                    }
+                }
+            }, 100L);
         }
         if (ReminderScheduler.isEnabled(this)
                 && !NotificationHelper.canPostNotifications(this)) {
             ReminderScheduler.disable(this);
             emitStringEvent("android-reminder-permission", "denied");
             emitStringEvent("android-reminder-updated", "off");
+        }
+        if (DoseReminderScheduler.isEnabled(this)
+                && !NotificationHelper.canPostDoseNotifications(this)) {
+            DoseReminderScheduler.disable(this);
+            emitStringEvent("android-dose-reminder-updated", "off");
         }
         if (!importPending && importCacheFile().isFile()) {
             importPending = true;
@@ -312,25 +334,42 @@ public final class MainActivity extends Activity {
         }
         boolean granted = grantResults.length > 0
                 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        // Either reminder may have asked for the permission; only report back
+        // for the ones that are actually waiting on it.
+        boolean dailyWaiting = ReminderScheduler.isEnabled(this);
+        boolean doseWaiting = DoseReminderScheduler.isEnabled(this);
         if (granted) {
-            ReminderScheduler.rescheduleStored(this);
             showToast("提醒通知已允许");
-            emitStringEvent("android-reminder-permission", "granted");
-            emitStringEvent("android-reminder-updated", reminderTimeFromState());
+            if (dailyWaiting) {
+                ReminderScheduler.rescheduleStored(this);
+                emitStringEvent("android-reminder-permission", "granted");
+                emitStringEvent("android-reminder-updated", reminderTimeFromState());
+            }
+            if (doseWaiting) {
+                DoseReminderScheduler.rescheduleStored(this);
+                emitStringEvent("android-dose-reminder-updated", "on");
+            }
         } else {
-            ReminderScheduler.disable(this);
-            showToast("未开启通知权限，每日提醒保持关闭");
-            emitStringEvent("android-reminder-permission", "denied");
-            emitStringEvent("android-reminder-updated", "off");
+            showToast("未开启通知权限，提醒保持关闭");
+            if (dailyWaiting) {
+                ReminderScheduler.disable(this);
+                emitStringEvent("android-reminder-permission", "denied");
+                emitStringEvent("android-reminder-updated", "off");
+            }
+            if (doseWaiting) {
+                DoseReminderScheduler.disable(this);
+                emitStringEvent("android-dose-reminder-updated", "off");
+            }
         }
     }
 
-    private void startExport(String json) {
+    private void startExport(String json, String filePrefix) {
         if (isSafOperationInFlight()) {
             showToast("已有备份操作正在进行");
             emitStringEvent("android-export-error", "operation_in_flight");
             return;
         }
+        exportFilePrefix = filePrefix;
         exportPrepareInFlight = true;
         boolean submitted = submitIo(new Runnable() {
             @Override
@@ -876,7 +915,7 @@ public final class MainActivity extends Activity {
 
     private String defaultBackupName() {
         String date = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(new Date());
-        return Edition.BACKUP_FILE_PREFIX + date + ".json";
+        return exportFilePrefix + date + ".json";
     }
 
     private boolean isAssetUrl(String url) {
@@ -884,7 +923,9 @@ public final class MainActivity extends Activity {
             return false;
         }
         Uri uri = Uri.parse(url);
-        if (!"file".equalsIgnoreCase(uri.getScheme()) || uri.getHost() != null) {
+        // file:///android_asset/... parses with an empty (not null) host.
+        String host = uri.getHost();
+        if (!"file".equalsIgnoreCase(uri.getScheme()) || (host != null && !host.isEmpty())) {
             return false;
         }
         List<String> segments = uri.getPathSegments();
@@ -1008,9 +1049,62 @@ public final class MainActivity extends Activity {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    startExport(json);
+                    startExport(json, Edition.BACKUP_FILE_PREFIX);
                 }
             });
+        }
+
+        @JavascriptInterface
+        public void exportHealthData(String json) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    startExport(json, Edition.BACKUP_FILE_PREFIX + "health_");
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void setDoseReminder(boolean enabled, String dateKey, String time, int intervalDays) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (!enabled) {
+                        DoseReminderScheduler.disable(MainActivity.this);
+                        return;
+                    }
+                    int[] hourMinute = ReminderScheduler.parseTime(time);
+                    if (hourMinute == null || !DoseReminderScheduler.enable(
+                            MainActivity.this,
+                            dateKey,
+                            hourMinute[0],
+                            hourMinute[1],
+                            intervalDays
+                    )) {
+                        emitStringEvent("android-dose-reminder-updated", "error");
+                        return;
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                            && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                            != PackageManager.PERMISSION_GRANTED) {
+                        requestNotificationPermissionIfNeeded();
+                        showToast("请允许通知，才能开启注射日提醒");
+                        return;
+                    }
+                    if (!NotificationHelper.canPostDoseNotifications(MainActivity.this)) {
+                        DoseReminderScheduler.disable(MainActivity.this);
+                        showToast("系统通知已关闭，请先在设置中开启");
+                        emitStringEvent("android-dose-reminder-updated", "off");
+                        return;
+                    }
+                    emitStringEvent("android-dose-reminder-updated", "on");
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public String getDoseReminderState() {
+            return DoseReminderScheduler.getStateJson(MainActivity.this);
         }
 
         @JavascriptInterface
@@ -1137,6 +1231,16 @@ public final class MainActivity extends Activity {
         public String platform() {
             return "android";
         }
+
+        @JavascriptInterface
+        public String appVersion() {
+            try {
+                String name = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+                return name == null ? "" : name;
+            } catch (PackageManager.NameNotFoundException ignored) {
+                return "";
+            }
+        }
     }
 
     private String reminderTimeFromState() {
@@ -1178,6 +1282,56 @@ public final class MainActivity extends Activity {
                         }
                     }
             );
+        }
+    }
+
+    // Native dialogs instead of WebView's default, which titles every prompt
+    // with the page origin ("The page at file:// says").
+    private final class OfflineChromeClient extends WebChromeClient {
+        @Override
+        public boolean onJsAlert(WebView view, String url, String message, JsResult result) {
+            return showJsDialog(message, result, false);
+        }
+
+        @Override
+        public boolean onJsConfirm(WebView view, String url, String message, JsResult result) {
+            return showJsDialog(message, result, true);
+        }
+
+        private boolean showJsDialog(String message, final JsResult result, boolean withCancel) {
+            if (destroyed || isFinishing()) {
+                result.cancel();
+                return true;
+            }
+            AlertDialog.Builder builder = new AlertDialog.Builder(
+                    MainActivity.this,
+                    darkSystemTheme
+                            ? android.R.style.Theme_DeviceDefault_Dialog_Alert
+                            : android.R.style.Theme_DeviceDefault_Light_Dialog_Alert
+            )
+                    .setMessage(message)
+                    .setPositiveButton("确定", new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialog, int which) {
+                            result.confirm();
+                        }
+                    })
+                    .setOnCancelListener(new DialogInterface.OnCancelListener() {
+                        @Override
+                        public void onCancel(DialogInterface dialog) {
+                            result.cancel();
+                        }
+                    });
+            if (withCancel) {
+                builder.setNegativeButton("取消", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        result.cancel();
+                    }
+                });
+            }
+            builder.show();
+            return true;
         }
     }
 

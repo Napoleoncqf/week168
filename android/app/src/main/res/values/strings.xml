@@ -5,4 +5,9 @@
     <string name="reminder_channel_description">每天提醒一次，花一分钟回想并记录刚刚过去的时间</string>
     <string name="reminder_title">想补几段时间吗？</string>
     <string name="reminder_text">花一分钟回想今天；暂时空着也没关系。</string>
+    <string name="dose_channel_name">注射日提醒</string>
+    <string name="dose_channel_description">按你设置的用药计划，在注射日提醒一次</string>
+    <string name="dose_title">今天是计划中的注射日</string>
+    <string name="dose_text">完成后在健康页记一笔，下次日期会自动顺延。</string>
+    <string name="dose_public_text">你设置的提醒</string>
 </resources>

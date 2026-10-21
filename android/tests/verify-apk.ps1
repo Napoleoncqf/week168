@@ -169,6 +169,8 @@ try {
         "assets/app.js",
         "assets/core.js",
         "assets/text-import.js",
+        "assets/health-core.js",
+        "assets/health-ui.js",
         "assets/edition.js",
         "assets/styles.css",
         "res/drawable/ic_launcher.xml",
@@ -181,7 +183,7 @@ try {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $Archive = [IO.Compression.ZipFile]::OpenRead($Apk)
     try {
-        foreach ($AssetName in @("index.html", "app.js", "core.js", "text-import.js", "edition.js", "styles.css")) {
+        foreach ($AssetName in @("index.html", "app.js", "core.js", "text-import.js", "health-core.js", "health-ui.js", "edition.js", "styles.css")) {
             $Entry = $Archive.GetEntry("assets/$AssetName")
             if ($null -eq $Entry) {
                 throw "APK 缺少离线资源：assets/$AssetName"
